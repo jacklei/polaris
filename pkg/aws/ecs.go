@@ -8,24 +8,29 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/rs/zerolog/log"
 )
 
 // ECSService represents an ECS service
 type ECSService struct {
-	Name         string `json:"name"`
-	Image        string `json:"image"`
-	Version      string `json:"version"`
-	DesiredCount int32  `json:"desired_count"`
-	RunningCount int32  `json:"running_count"`
-	PendingCount int32  `json:"pending_count"`
+	Name             string `json:"name"`
+	Image            string `json:"image"`
+	Version          string `json:"version"`
+	PushedAt         string `json:"pushed_at"`
+	CVECriticalCount int    `json:"cve_critical_count"`
+	DesiredCount     int32  `json:"desired_count"`
+	RunningCount     int32  `json:"running_count"`
+	PendingCount     int32  `json:"pending_count"`
 }
 
 // GetECSServices retrieves ECS services from the specified cluster
 // If limit > 0, only returns up to that many services
-func GetECSServices(ctx context.Context, profile, clusterName string, limit int) ([]ECSService, error) {
+// If scanEnabled is true, retrieves CVE critical counts using scanProfile
+func GetECSServices(ctx context.Context, profile, clusterName string, limit int, scanEnabled bool, scanProfile string) ([]ECSService, error) {
 	// Load AWS config with the specified profile
 	cfg, err := LoadAWSConfig(ctx, profile)
 	if err != nil {
@@ -34,6 +39,23 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int)
 
 	// Create ECS client
 	ecsClient := ecs.NewFromConfig(cfg)
+
+	// Create ECR client for getting image push dates (use scanProfile which is acorns-production)
+	var ecrClient *ecr.Client
+	ecrCfg, err := LoadAWSConfig(ctx, scanProfile)
+	if err == nil {
+		ecrClient = ecr.NewFromConfig(ecrCfg)
+	}
+
+	// Create Inspector2 client for scanning if enabled
+	var inspectorClient *inspector2.Client
+	if scanEnabled {
+		var err error
+		inspectorClient, err = GetInspector2Client(ctx, scanProfile)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Initialize progress bar
 	pw := progress.NewWriter()
@@ -128,6 +150,7 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int)
 				// Get container image from task definition (only if we haven't hit limit)
 				image := ""
 				version := ""
+				fullImage := ""
 				if limit == 0 || len(services) < limit {
 					if service.TaskDefinition != nil {
 						taskDefArn := aws.ToString(service.TaskDefinition)
@@ -139,7 +162,7 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int)
 							if len(taskDefOutput.TaskDefinition.ContainerDefinitions) > 0 {
 								containerDef := taskDefOutput.TaskDefinition.ContainerDefinitions[0]
 								if containerDef.Image != nil {
-									fullImage := aws.ToString(containerDef.Image)
+									fullImage = aws.ToString(containerDef.Image)
 									// Remove ECR host prefix (e.g., "255479557906.dkr.ecr.us-east-1.amazonaws.com/")
 									// Extract everything after the last "/"
 									var imageWithTag string
@@ -163,13 +186,33 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int)
 					}
 				}
 
+				// Get image push date if image is from ECR
+				pushedAt := ""
+				if ecrClient != nil && image != "" && version != "" {
+					// Check if image is from the ECR registry (255479557906.dkr.ecr.us-east-1.amazonaws.com)
+					if strings.Contains(fullImage, "255479557906.dkr.ecr.us-east-1.amazonaws.com") {
+						pushedAt = GetImagePushedAt(ctx, ecrClient, image, version)
+					}
+				}
+
+				// Get CVE critical count if scanning is enabled and image is from ECR
+				cveCriticalCount := 0
+				if scanEnabled && inspectorClient != nil && image != "" && version != "" {
+					// Check if image is from the ECR registry (255479557906.dkr.ecr.us-east-1.amazonaws.com)
+					if strings.Contains(fullImage, "255479557906.dkr.ecr.us-east-1.amazonaws.com") {
+						cveCriticalCount = GetCVECriticalCount(ctx, inspectorClient, image, version)
+					}
+				}
+
 				services = append(services, ECSService{
-					Name:         aws.ToString(service.ServiceName),
-					Image:        image,
-					Version:      version,
-					DesiredCount: service.DesiredCount,
-					RunningCount: service.RunningCount,
-					PendingCount: service.PendingCount,
+					Name:             aws.ToString(service.ServiceName),
+					Image:            image,
+					Version:          version,
+					PushedAt:         pushedAt,
+					CVECriticalCount: cveCriticalCount,
+					DesiredCount:     service.DesiredCount,
+					RunningCount:     service.RunningCount,
+					PendingCount:     service.PendingCount,
 				})
 
 				// Check limit after adding service

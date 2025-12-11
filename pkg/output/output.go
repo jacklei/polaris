@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jacklei/polaris/pkg/aws"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -84,47 +85,58 @@ func PrintTable(data interface{}, sortColumn string, sortDescending bool, filter
 }
 
 func printServicesTable(services []aws.ECSService, sortColumn string, sortDescending bool, filter string) error {
-	// Filter services if filter is specified (format: "column:threshold")
+	// Filter services if filter is specified
 	if filter != "" {
 		filtered := make([]aws.ECSService, 0, len(services))
 
-		// Parse filter: "column:threshold"
-		parts := strings.Split(filter, ":")
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid filter format: expected 'column:threshold' (e.g., 'count:100' or 'delta:0')")
-		}
-
-		filterCol := strings.TrimSpace(parts[0])
-		thresholdStr := strings.TrimSpace(parts[1])
-		threshold, err := strconv.ParseFloat(thresholdStr, 64)
-		if err != nil {
-			return fmt.Errorf("invalid threshold value '%s': %w", thresholdStr, err)
-		}
-
-		for _, svc := range services {
-			var shouldInclude bool
-
-			switch filterCol {
-			case "count":
-				// Filter by desired count: show services where desired count < threshold
-				shouldInclude = float64(svc.DesiredCount) < threshold
-			case "delta":
-				// Filter by delta: show services where delta < threshold
-				delta := svc.RunningCount - svc.DesiredCount
-				shouldInclude = float64(delta) < threshold
-			case "running":
-				// Filter by running count: show services where running count < threshold
-				shouldInclude = float64(svc.RunningCount) < threshold
-			default:
-				// Unknown column, skip filtering for this service
-				shouldInclude = true
+		// Check if filter is "cve" (special case - no threshold needed)
+		if strings.TrimSpace(filter) == "cve" {
+			// Show only services with critical CVEs
+			for _, svc := range services {
+				if svc.CVECriticalCount > 0 {
+					filtered = append(filtered, svc)
+				}
+			}
+			services = filtered
+		} else {
+			// Parse filter: "column:threshold"
+			parts := strings.Split(filter, ":")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid filter format: expected 'column:threshold' (e.g., 'count:100' or 'delta:0') or 'cve'")
 			}
 
-			if shouldInclude {
-				filtered = append(filtered, svc)
+			filterCol := strings.TrimSpace(parts[0])
+			thresholdStr := strings.TrimSpace(parts[1])
+			threshold, err := strconv.ParseFloat(thresholdStr, 64)
+			if err != nil {
+				return fmt.Errorf("invalid threshold value '%s': %w", thresholdStr, err)
 			}
+
+			for _, svc := range services {
+				var shouldInclude bool
+
+				switch filterCol {
+				case "count":
+					// Filter by desired count: show services where desired count < threshold
+					shouldInclude = float64(svc.DesiredCount) < threshold
+				case "delta":
+					// Filter by delta: show services where delta < threshold
+					delta := svc.RunningCount - svc.DesiredCount
+					shouldInclude = float64(delta) < threshold
+				case "running":
+					// Filter by running count: show services where running count < threshold
+					shouldInclude = float64(svc.RunningCount) < threshold
+				default:
+					// Unknown column, skip filtering for this service
+					shouldInclude = true
+				}
+
+				if shouldInclude {
+					filtered = append(filtered, svc)
+				}
+			}
+			services = filtered
 		}
-		services = filtered
 	}
 
 	// Sort services if sort column is specified
@@ -146,6 +158,9 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 				deltaI := services[i].RunningCount - services[i].DesiredCount
 				deltaJ := services[j].RunningCount - services[j].DesiredCount
 				less = deltaI < deltaJ
+			case "cve":
+				// Sort by CVE critical count
+				less = services[i].CVECriticalCount < services[j].CVECriticalCount
 			default:
 				return false // Unknown column, don't sort
 			}
@@ -158,7 +173,22 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
-	t.AppendHeader(table.Row{"Name", "Image", "Version", "Count", "Delta"})
+
+	// Check if any service has CVE data (scanning was enabled)
+	hasCVEData := false
+	for _, svc := range services {
+		if svc.CVECriticalCount > 0 {
+			hasCVEData = true
+			break
+		}
+	}
+
+	// Build header based on whether CVE data exists
+	if hasCVEData {
+		t.AppendHeader(table.Row{"Name", "Image", "Version", "Pushed At", "CVE Critical", "Count", "Delta"})
+	} else {
+		t.AppendHeader(table.Row{"Name", "Image", "Version", "Pushed At", "Count", "Delta"})
+	}
 
 	for _, svc := range services {
 		// Count column: show desired if running>=desired, otherwise show desired/running/pending
@@ -192,13 +222,42 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 			}
 		}
 
-		t.AppendRow(table.Row{
-			svc.Name,
-			svc.Image,
-			svc.Version,
-			text.Colors{countColor}.Sprint(countStr),
-			text.Colors{deltaColor}.Sprint(deltaStr),
-		})
+		// Format pushed at date (show shorter format if available)
+		pushedAtStr := svc.PushedAt
+		if pushedAtStr != "" {
+			// Try to parse and format as shorter date
+			if t, err := time.Parse(time.RFC3339, pushedAtStr); err == nil {
+				pushedAtStr = t.Format("2006-01-02 15:04")
+			}
+		}
+
+		// Build row based on whether CVE data exists
+		if hasCVEData {
+			cveStr := fmt.Sprintf("%d", svc.CVECriticalCount)
+			cveColor := text.FgWhite
+			if svc.CVECriticalCount > 0 {
+				cveColor = text.FgRed
+			}
+
+			t.AppendRow(table.Row{
+				svc.Name,
+				svc.Image,
+				svc.Version,
+				pushedAtStr,
+				text.Colors{cveColor}.Sprint(cveStr),
+				text.Colors{countColor}.Sprint(countStr),
+				text.Colors{deltaColor}.Sprint(deltaStr),
+			})
+		} else {
+			t.AppendRow(table.Row{
+				svc.Name,
+				svc.Image,
+				svc.Version,
+				pushedAtStr,
+				text.Colors{countColor}.Sprint(countStr),
+				text.Colors{deltaColor}.Sprint(deltaStr),
+			})
+		}
 	}
 
 	t.Render()
