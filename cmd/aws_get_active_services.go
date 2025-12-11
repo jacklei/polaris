@@ -14,6 +14,7 @@ var clusterName string
 var sortColumn string
 var sortDescending bool
 var filter string
+var limit int
 
 // awsGetActiveServicesCmd represents the get-active-services command
 var awsGetActiveServicesCmd = &cobra.Command{
@@ -29,7 +30,7 @@ If no profile is specified, uses the default profile.`,
 			Msg("Getting active ECS services")
 
 		// Get ECS services from the cluster
-		services, err := aws.GetECSServices(ctx, profile, clusterName)
+		services, err := aws.GetECSServices(ctx, profile, clusterName, limit)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to get ECS services")
 			return
@@ -62,4 +63,7 @@ func init() {
 
 	// Add filter flag
 	awsGetActiveServicesCmd.Flags().StringVar(&filter, "filter", "", "Filter by column and threshold (e.g., 'count:100' or 'delta:0')")
+
+	// Add limit flag
+	awsGetActiveServicesCmd.Flags().IntVarP(&limit, "limit", "n", 0, "Limit the number of services to query (0 = no limit)")
 }

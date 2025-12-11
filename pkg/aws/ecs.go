@@ -3,22 +3,29 @@ package aws
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/rs/zerolog/log"
 )
 
 // ECSService represents an ECS service
 type ECSService struct {
 	Name         string `json:"name"`
+	Image        string `json:"image"`
+	Version      string `json:"version"`
 	DesiredCount int32  `json:"desired_count"`
 	RunningCount int32  `json:"running_count"`
 	PendingCount int32  `json:"pending_count"`
 }
 
-// GetECSServices retrieves all ECS services from the specified cluster
-func GetECSServices(ctx context.Context, profile, clusterName string) ([]ECSService, error) {
+// GetECSServices retrieves ECS services from the specified cluster
+// If limit > 0, only returns up to that many services
+func GetECSServices(ctx context.Context, profile, clusterName string, limit int) ([]ECSService, error) {
 	// Load AWS config with the specified profile
 	cfg, err := LoadAWSConfig(ctx, profile)
 	if err != nil {
@@ -28,11 +35,33 @@ func GetECSServices(ctx context.Context, profile, clusterName string) ([]ECSServ
 	// Create ECS client
 	ecsClient := ecs.NewFromConfig(cfg)
 
-	// List services in the cluster
+	// Initialize progress bar
+	pw := progress.NewWriter()
+	pw.SetOutputWriter(os.Stderr)
+	pw.SetStyle(progress.StyleDefault)
+	pw.SetTrackerPosition(progress.PositionRight)
+	pw.SetUpdateFrequency(time.Millisecond * 50)
+
+	tracker := &progress.Tracker{
+		Message: "Retrieving ECS services",
+		Total:   0, // Will be updated as we discover pages
+		Units:   progress.UnitsDefault,
+	}
+	pw.AppendTracker(tracker)
+
+	// Start progress bar rendering
+	go pw.Render()
+	defer pw.Stop()
+
+	// Process services as we list them (streaming approach)
+	// This avoids storing all ARNs in memory and allows early termination
 	var services []ECSService
 	var nextToken *string
+	var totalProcessed int64
+	batchSize := 10
 
 	for {
+		// List services for this page
 		input := &ecs.ListServicesInput{
 			Cluster: aws.String(clusterName),
 		}
@@ -42,6 +71,7 @@ func GetECSServices(ctx context.Context, profile, clusterName string) ([]ECSServ
 
 		listOutput, err := ecsClient.ListServices(ctx, input)
 		if err != nil {
+			tracker.MarkAsErrored()
 			return nil, fmt.Errorf("failed to list ECS services: %w", err)
 		}
 
@@ -49,35 +79,114 @@ func GetECSServices(ctx context.Context, profile, clusterName string) ([]ECSServ
 			break
 		}
 
-		// Describe the services to get full details
-		describeInput := &ecs.DescribeServicesInput{
-			Cluster:  aws.String(clusterName),
-			Services: listOutput.ServiceArns,
+		// Update total estimate
+		totalProcessed += int64(len(listOutput.ServiceArns))
+		if tracker.Total < totalProcessed {
+			tracker.Total = totalProcessed
 		}
 
-		describeOutput, err := ecsClient.DescribeServices(ctx, describeInput)
-		if err != nil {
-			return nil, fmt.Errorf("failed to describe ECS services: %w", err)
+		// Describe services in batches and process immediately
+		for i := 0; i < len(listOutput.ServiceArns); i += batchSize {
+			// Check if we've reached the limit before processing more
+			if limit > 0 && len(services) >= limit {
+				break
+			}
+
+			end := i + batchSize
+			if end > len(listOutput.ServiceArns) {
+				end = len(listOutput.ServiceArns)
+			}
+			batch := listOutput.ServiceArns[i:end]
+
+			describeInput := &ecs.DescribeServicesInput{
+				Cluster:  aws.String(clusterName),
+				Services: batch,
+			}
+
+			tracker.Message = fmt.Sprintf("Describing services (%d processed)", len(services))
+
+			describeOutput, err := ecsClient.DescribeServices(ctx, describeInput)
+			if err != nil {
+				tracker.MarkAsErrored()
+				return nil, fmt.Errorf("failed to describe ECS services: %w", err)
+			}
+
+			// Process each service
+			for _, service := range describeOutput.Services {
+				tracker.Increment(1)
+
+				// Only include services with desired count greater than 0
+				if service.DesiredCount <= 0 {
+					continue
+				}
+
+				// Only include services with ACTIVE status
+				if service.Status == nil || string(*service.Status) != "ACTIVE" {
+					continue
+				}
+
+				// Get container image from task definition (only if we haven't hit limit)
+				image := ""
+				version := ""
+				if limit == 0 || len(services) < limit {
+					if service.TaskDefinition != nil {
+						taskDefArn := aws.ToString(service.TaskDefinition)
+						taskDefOutput, err := ecsClient.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{
+							TaskDefinition: aws.String(taskDefArn),
+						})
+						if err == nil && taskDefOutput.TaskDefinition != nil {
+							// Get image from the first container definition (main container)
+							if len(taskDefOutput.TaskDefinition.ContainerDefinitions) > 0 {
+								containerDef := taskDefOutput.TaskDefinition.ContainerDefinitions[0]
+								if containerDef.Image != nil {
+									fullImage := aws.ToString(containerDef.Image)
+									// Remove ECR host prefix (e.g., "255479557906.dkr.ecr.us-east-1.amazonaws.com/")
+									// Extract everything after the last "/"
+									var imageWithTag string
+									if idx := strings.LastIndex(fullImage, "/"); idx >= 0 && idx < len(fullImage)-1 {
+										imageWithTag = fullImage[idx+1:]
+									} else {
+										imageWithTag = fullImage
+									}
+
+									// Split image name and tag (version) on colon
+									if colonIdx := strings.LastIndex(imageWithTag, ":"); colonIdx >= 0 {
+										image = imageWithTag[:colonIdx]
+										version = imageWithTag[colonIdx+1:]
+									} else {
+										image = imageWithTag
+										version = "latest" // Default if no tag specified
+									}
+								}
+							}
+						}
+					}
+				}
+
+				services = append(services, ECSService{
+					Name:         aws.ToString(service.ServiceName),
+					Image:        image,
+					Version:      version,
+					DesiredCount: service.DesiredCount,
+					RunningCount: service.RunningCount,
+					PendingCount: service.PendingCount,
+				})
+
+				// Check limit after adding service
+				if limit > 0 && len(services) >= limit {
+					break
+				}
+			}
+
+			// Check if we've reached the limit
+			if limit > 0 && len(services) >= limit {
+				break
+			}
 		}
 
-		// Convert to our ECSService struct and filter by desired count > 0 and status = ACTIVE
-		for _, service := range describeOutput.Services {
-			// Only include services with desired count greater than 0
-			if service.DesiredCount <= 0 {
-				continue
-			}
-
-			// Only include services with ACTIVE status
-			if service.Status == nil || string(*service.Status) != "ACTIVE" {
-				continue
-			}
-
-			services = append(services, ECSService{
-				Name:         aws.ToString(service.ServiceName),
-				DesiredCount: service.DesiredCount,
-				RunningCount: service.RunningCount,
-				PendingCount: service.PendingCount,
-			})
+		// Check if we've reached the limit before fetching next page
+		if limit > 0 && len(services) >= limit {
+			break
 		}
 
 		nextToken = listOutput.NextToken
@@ -85,6 +194,9 @@ func GetECSServices(ctx context.Context, profile, clusterName string) ([]ECSServ
 			break
 		}
 	}
+
+	tracker.MarkAsDone()
+	time.Sleep(100 * time.Millisecond) // Give progress bar time to update
 
 	log.Info().
 		Str("cluster", clusterName).

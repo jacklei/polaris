@@ -8,10 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jacklei/polaris/pkg/aws"
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
@@ -129,27 +127,8 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 		services = filtered
 	}
 
-	// Initialize progress bar
-	pw := progress.NewWriter()
-	pw.SetOutputWriter(os.Stderr)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetUpdateFrequency(time.Millisecond * 50)
-
-	tracker := &progress.Tracker{
-		Message: "Generating table",
-		Total:   int64(len(services)),
-		Units:   progress.UnitsDefault,
-	}
-	pw.AppendTracker(tracker)
-
-	// Start progress bar rendering
-	go pw.Render()
-	defer pw.Stop()
-
 	// Sort services if sort column is specified
 	if sortColumn != "" {
-		tracker.Message = "Sorting services"
 		sort.Slice(services, func(i, j int) bool {
 			var less bool
 			switch sortColumn {
@@ -177,10 +156,9 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 		})
 	}
 
-	tracker.Message = "Building table rows"
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
-	t.AppendHeader(table.Row{"Name", "Count", "Delta"})
+	t.AppendHeader(table.Row{"Name", "Image", "Version", "Count", "Delta"})
 
 	for _, svc := range services {
 		// Count column: show desired if running>=desired, otherwise show desired/running/pending
@@ -216,14 +194,12 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 
 		t.AppendRow(table.Row{
 			svc.Name,
+			svc.Image,
+			svc.Version,
 			text.Colors{countColor}.Sprint(countStr),
 			text.Colors{deltaColor}.Sprint(deltaStr),
 		})
-		tracker.Increment(1)
 	}
-
-	tracker.MarkAsDone()
-	time.Sleep(100 * time.Millisecond) // Give progress bar time to update
 
 	t.Render()
 	return nil
