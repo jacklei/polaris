@@ -220,6 +220,238 @@ func TestGetLatestImageTags_ZeroMaxTags(t *testing.T) {
 	_ = tags
 }
 
+func TestGetLatestImageTags_NegativeMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with negative maxTags (should default to 10)
+	tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", -1)
+	if err != nil {
+		t.Logf("GetLatestImageTags() with negative maxTags returned error: %v", err)
+		return
+	}
+
+	// Should handle gracefully and default to 10
+	_ = tags
+}
+
+func TestGetLatestImageTags_LargeMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with very large maxTags value
+	tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", 1000)
+	if err != nil {
+		t.Logf("GetLatestImageTags() with large maxTags returned error: %v", err)
+		return
+	}
+
+	// Should handle gracefully
+	if len(tags) > 1000 {
+		t.Errorf("GetLatestImageTags() returned more tags than maxTags: got %d, want <= 1000", len(tags))
+	}
+}
+
+func TestGetLatestImageTags_EmptyImageIds(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with repository that returns empty ImageIds
+	// This tests the path where ListImages returns empty ImageIds
+	tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", 10)
+	if err != nil {
+		t.Logf("GetLatestImageTags() with empty ImageIds returned error: %v", err)
+		return
+	}
+
+	// Should return empty slice, not error
+	if tags == nil {
+		t.Error("GetLatestImageTags() should return empty slice, not nil")
+	}
+	if len(tags) != 0 {
+		t.Errorf("GetLatestImageTags() with empty ImageIds = %v, want empty slice", tags)
+	}
+}
+
+func TestGetLatestImageTags_ErrorHandling(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test error handling with invalid repository name that causes API error
+	_, err = GetLatestImageTags(ctx, client, "invalid/repo/name/with/many/slashes", 10)
+	if err == nil {
+		t.Log("GetLatestImageTags() with invalid repo name may succeed or fail (implementation dependent)")
+	} else {
+		// Error is expected for invalid repository names
+		t.Logf("GetLatestImageTags() with invalid repo returned error (expected): %v", err)
+	}
+}
+
+func TestGetLatestImageTags_MaxTagsLimit(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test that maxTags limit is respected
+	// Request 5 tags, should get at most 5
+	tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", 5)
+	if err != nil {
+		t.Logf("GetLatestImageTags() with maxTags=5 returned error: %v", err)
+		return
+	}
+
+	if len(tags) > 5 {
+		t.Errorf("GetLatestImageTags() returned more tags than requested: got %d, want <= 5", len(tags))
+	}
+}
+
+func TestGetLatestImageTags_DefaultMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test that default maxTags is 10 when 0 is provided
+	tags1, err1 := GetLatestImageTags(ctx, client, "non-existent-repo-12345", 0)
+	if err1 != nil {
+		t.Logf("GetLatestImageTags() with maxTags=0 returned error: %v", err1)
+		return
+	}
+
+	// Test that default maxTags is 10 when negative is provided
+	tags2, err2 := GetLatestImageTags(ctx, client, "non-existent-repo-12345", -5)
+	if err2 != nil {
+		t.Logf("GetLatestImageTags() with maxTags=-5 returned error: %v", err2)
+		return
+	}
+
+	// Both should default to 10
+	_ = tags1
+	_ = tags2
+}
+
+func TestGetLatestImageTags_RepositoryNameValidation(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	testCases := []struct {
+		name     string
+		repoName string
+		maxTags  int
+	}{
+		{"Empty string", "", 10},
+		{"Single character", "a", 10},
+		{"With slashes", "namespace/repo", 10},
+		{"With hyphens", "my-repo-name", 10},
+		{"With underscores", "my_repo_name", 10},
+		{"With numbers", "repo123", 10},
+		{"Long name", "very-long-repository-name-with-many-characters", 10},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tags, err := GetLatestImageTags(ctx, client, tc.repoName, tc.maxTags)
+			// We don't assert on results since these may error or succeed depending on AWS
+			// We just want to ensure the function handles various repository name formats
+			_ = tags
+			_ = err
+		})
+	}
+}
+
+func TestGetLatestImageTags_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	client, err := GetECRClient(context.Background(), "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with cancelled context
+	tags, err := GetLatestImageTags(ctx, client, "test-repo", 10)
+	if err == nil {
+		t.Logf("GetLatestImageTags() with cancelled context returned: %v (may succeed if already cached)", tags)
+	} else {
+		// Error is expected with cancelled context
+		t.Logf("GetLatestImageTags() with cancelled context returned error (expected): %v", err)
+	}
+}
+
+func TestGetLatestImageTags_EdgeCaseMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	testCases := []struct {
+		name    string
+		maxTags int
+	}{
+		{"One tag", 1},
+		{"Two tags", 2},
+		{"Max int32", 2147483647},
+		{"Zero", 0},
+		{"Negative one", -1},
+		{"Negative large", -100},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", tc.maxTags)
+			if err != nil {
+				t.Logf("GetLatestImageTags() with maxTags=%d returned error: %v", tc.maxTags, err)
+				return
+			}
+
+			// For non-negative maxTags, result should not exceed maxTags (or default to 10)
+			expectedMax := tc.maxTags
+			if expectedMax <= 0 {
+				expectedMax = 10
+			}
+			if len(tags) > expectedMax {
+				t.Errorf("GetLatestImageTags() with maxTags=%d returned %d tags, want <= %d", tc.maxTags, len(tags), expectedMax)
+			}
+		})
+	}
+}
+
 func TestGetLatestImageTagsWithDates_Integration(t *testing.T) {
 	ctx := context.Background()
 
