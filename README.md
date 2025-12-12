@@ -108,7 +108,7 @@ polaris aws get-ecr-scan my-repo:v1.0.0 -o table
 polaris aws get-ecr-scan my-repo:v1.0.0 -o json
 
 # Scan with full ECR path
-polaris aws get-ecr-scan 255479557906.dkr.ecr.us-east-1.amazonaws.com/my-repo:v1.0.0
+polaris aws get-ecr-scan my-repo:v1.0.0
 ```
 
 **Exit Codes:**

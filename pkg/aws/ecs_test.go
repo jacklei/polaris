@@ -135,14 +135,14 @@ func TestParseImageAndVersion(t *testing.T) {
 	}{
 		{
 			name:         "ECR image with tag",
-			fullImage:    "255479557906.dkr.ecr.us-east-1.amazonaws.com/my-repo:1.0.0",
+			fullImage:    "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo:1.0.0",
 			wantImage:    "my-repo",
 			wantVersion:  "1.0.0",
 			wantPushedAt: true,
 		},
 		{
 			name:         "ECR image without tag",
-			fullImage:    "255479557906.dkr.ecr.us-east-1.amazonaws.com/my-repo",
+			fullImage:    "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo",
 			wantImage:    "my-repo",
 			wantVersion:  "latest",
 			wantPushedAt: true,
@@ -170,7 +170,7 @@ func TestParseImageAndVersion(t *testing.T) {
 		},
 		{
 			name:         "ECR image with namespace",
-			fullImage:    "255479557906.dkr.ecr.us-east-1.amazonaws.com/namespace/my-repo:1.0.0",
+			fullImage:    "123456789012.dkr.ecr.us-east-1.amazonaws.com/namespace/my-repo:1.0.0",
 			wantImage:    "my-repo",
 			wantVersion:  "1.0.0",
 			wantPushedAt: true,
@@ -205,7 +205,7 @@ func TestParseImageAndVersion(t *testing.T) {
 		},
 		{
 			name:         "ECR image with digest",
-			fullImage:    "255479557906.dkr.ecr.us-east-1.amazonaws.com/my-repo@sha256:abc123",
+			fullImage:    "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo@sha256:abc123",
 			wantImage:    "my-repo@sha256",
 			wantVersion:  "abc123",
 			wantPushedAt: true,
@@ -239,7 +239,8 @@ func TestParseImageAndVersion(t *testing.T) {
 			}
 
 			// Test ECR registry detection
-			isECR := strings.Contains(tt.fullImage, "255479557906.dkr.ecr.us-east-1.amazonaws.com")
+			// Note: In tests, we can't easily get account ID, so we check for any ECR pattern
+			isECR := strings.Contains(tt.fullImage, ".dkr.ecr.") && strings.Contains(tt.fullImage, ".amazonaws.com")
 			if isECR != tt.wantPushedAt {
 				t.Errorf("parseImageAndVersion() isECR = %v, want %v", isECR, tt.wantPushedAt)
 			}

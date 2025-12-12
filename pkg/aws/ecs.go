@@ -27,6 +27,15 @@ type ECSService struct {
 	PendingCount     int32  `json:"pending_count"`
 }
 
+// isECRImage checks if an image is from the specified ECR registry
+func isECRImage(fullImage, accountID, region string) bool {
+	if accountID == "" || region == "" {
+		return false
+	}
+	ecrHost := fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", accountID, region)
+	return strings.Contains(fullImage, ecrHost)
+}
+
 // GetECSServices retrieves ECS services from the specified cluster
 // If limit > 0, only returns up to that many services
 // If scanEnabled is true, retrieves CVE critical counts using scanProfile
@@ -39,6 +48,20 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int,
 
 	// Create ECS client
 	ecsClient := ecs.NewFromConfig(cfg)
+
+	// Get AWS account ID and region from scanProfile (acorns-production) for ECR registry detection
+	var accountID string
+	var region string
+	if scanProfile != "" {
+		accountID, err = GetAccountID(ctx, scanProfile)
+		if err != nil {
+			log.Debug().Err(err).Str("profile", scanProfile).Msg("Failed to get account ID, ECR detection may be limited")
+		}
+		ecrCfg, err := LoadAWSConfig(ctx, scanProfile)
+		if err == nil {
+			region = ecrCfg.Region
+		}
+	}
 
 	// Create ECR client for getting image push dates (use scanProfile which is acorns-production)
 	var ecrClient *ecr.Client
@@ -163,7 +186,7 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int,
 								containerDef := taskDefOutput.TaskDefinition.ContainerDefinitions[0]
 								if containerDef.Image != nil {
 									fullImage = aws.ToString(containerDef.Image)
-									// Remove ECR host prefix (e.g., "255479557906.dkr.ecr.us-east-1.amazonaws.com/")
+									// Remove ECR host prefix (e.g., "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/")
 									// Extract everything after the last "/"
 									var imageWithTag string
 									if idx := strings.LastIndex(fullImage, "/"); idx >= 0 && idx < len(fullImage)-1 {
@@ -189,8 +212,8 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int,
 				// Get image push date if image is from ECR
 				pushedAt := ""
 				if ecrClient != nil && image != "" && version != "" {
-					// Check if image is from the ECR registry (255479557906.dkr.ecr.us-east-1.amazonaws.com)
-					if strings.Contains(fullImage, "255479557906.dkr.ecr.us-east-1.amazonaws.com") {
+					// Check if image is from the ECR registry
+					if isECRImage(fullImage, accountID, region) {
 						pushedAt = GetImagePushedAt(ctx, ecrClient, image, version)
 					}
 				}
@@ -198,8 +221,8 @@ func GetECSServices(ctx context.Context, profile, clusterName string, limit int,
 				// Get CVE critical count if scanning is enabled and image is from ECR
 				cveCriticalCount := 0
 				if scanEnabled && inspectorClient != nil && image != "" && version != "" {
-					// Check if image is from the ECR registry (255479557906.dkr.ecr.us-east-1.amazonaws.com)
-					if strings.Contains(fullImage, "255479557906.dkr.ecr.us-east-1.amazonaws.com") {
+					// Check if image is from the ECR registry
+					if isECRImage(fullImage, accountID, region) {
 						cveCriticalCount = GetCVECriticalCount(ctx, inspectorClient, image, version)
 					}
 				}

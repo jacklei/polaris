@@ -36,14 +36,14 @@ func TestParseImageTag(t *testing.T) {
 		},
 		{
 			name:     "ECR host prefix with repository:tag",
-			imageArg: "255479557906.dkr.ecr.us-east-1.amazonaws.com/my-repo:v1.0.0",
+			imageArg: "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo:v1.0.0",
 			wantRepo: "my-repo",
 			wantTag:  "v1.0.0",
 			wantErr:  false,
 		},
 		{
 			name:     "ECR host prefix without tag",
-			imageArg: "255479557906.dkr.ecr.us-east-1.amazonaws.com/my-repo",
+			imageArg: "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo",
 			wantRepo: "my-repo",
 			wantTag:  "",
 			wantErr:  false,
@@ -115,4 +115,3 @@ func TestParseImageTag(t *testing.T) {
 		})
 	}
 }
-

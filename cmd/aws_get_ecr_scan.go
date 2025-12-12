@@ -145,9 +145,9 @@ func init() {
 //   - "repository:tag"
 //   - "repository" (no tag)
 //   - "namespace/repository:tag"
-//   - "255479557906.dkr.ecr.us-east-1.amazonaws.com/repository:tag"
+//   - "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/repository:tag"
 func parseImageTag(imageArg string) (repositoryName, imageTag string, err error) {
-	// Remove ECR host prefix if present (e.g., "255479557906.dkr.ecr.us-east-1.amazonaws.com/")
+	// Remove ECR host prefix if present (e.g., "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/")
 	var imageWithTag string
 	if idx := strings.LastIndex(imageArg, "/"); idx >= 0 && idx < len(imageArg)-1 {
 		imageWithTag = imageArg[idx+1:]
