@@ -339,7 +339,15 @@ Review the following areas:
 - Best practice violations
 - Code that will cause operational problems
 
-Provide direct feedback like: "Why did you do X? Y would be better because Z." or "Switch it to JSONB. You may not need it now, but in the future or in an incident, the JSONB will be more performant." Be specific about what's wrong and what should be done instead. Only report actual issues - if there are no concerns, don't mention it.%s
+Provide direct feedback like: "Why did you do X? Y would be better because Z." or "Switch it to JSONB. You may not need it now, but in the future or in an incident, the JSONB will be more performant." Be specific about what's wrong and what should be done instead. Only report actual issues - if there are no concerns, don't mention it.
+
+At the end of your review, provide a risk assessment score from 0-10 where:
+- 0-2: Low risk - Minor issues, no blocking concerns
+- 3-5: Medium risk - Some concerns that should be addressed
+- 6-8: High risk - Significant issues that need attention
+- 9-10: Critical risk - Blocking issues that must be fixed before merge
+
+Format: "Risk Assessment Score: X/10" where X is the score.%s
 
 Here is the diff to review:
 

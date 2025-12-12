@@ -751,6 +751,25 @@ func printClaudeAnalysisTable(data interface{}) error {
 
 	t.Render()
 
+	// Extract and display risk assessment score
+	riskScore := extractRiskScore(analysisText)
+	if riskScore >= 0 {
+		fmt.Println()
+		fmt.Println(strings.Repeat("─", 80))
+		fmt.Printf("🎯 Risk Assessment Score: %d/10", riskScore)
+		if riskScore >= 9 {
+			fmt.Printf(" - CRITICAL RISK - Blocking issues must be fixed before merge")
+		} else if riskScore >= 6 {
+			fmt.Printf(" - HIGH RISK - Significant issues need attention")
+		} else if riskScore >= 3 {
+			fmt.Printf(" - MEDIUM RISK - Some concerns should be addressed")
+		} else {
+			fmt.Printf(" - LOW RISK - Minor issues, no blocking concerns")
+		}
+		fmt.Println()
+		fmt.Println(strings.Repeat("─", 80))
+	}
+
 	// Print full analysis text below the table
 	fmt.Println("\n📝 Full Analysis:")
 	fmt.Println(strings.Repeat("─", 80))
@@ -987,6 +1006,55 @@ func isNoIssuesMessage(text string) bool {
 		(lowerText == "none") ||
 		(lowerText == "no issues") ||
 		(lowerText == "no concerns")
+}
+
+// extractRiskScore extracts the risk assessment score from Claude's analysis text
+func extractRiskScore(analysisText string) int {
+	// Look for patterns like "Risk Assessment Score: X/10" or "Risk Score: X/10"
+	lines := strings.Split(analysisText, "\n")
+	for _, line := range lines {
+		lineLower := strings.ToLower(strings.TrimSpace(line))
+
+		// Check for "risk assessment score: X/10" pattern
+		if strings.Contains(lineLower, "risk assessment score") || strings.Contains(lineLower, "risk score") {
+			// Try to extract number before "/10"
+			if idx := strings.Index(lineLower, "/10"); idx > 0 {
+				// Look backwards for a number
+				scoreStr := ""
+				for i := idx - 1; i >= 0; i-- {
+					if line[i] >= '0' && line[i] <= '9' {
+						scoreStr = string(line[i]) + scoreStr
+					} else if len(scoreStr) > 0 {
+						break
+					}
+				}
+				if scoreStr != "" {
+					if score, err := strconv.Atoi(scoreStr); err == nil {
+						if score >= 0 && score <= 10 {
+							return score
+						}
+					}
+				}
+			}
+		}
+
+		// Also check for standalone "X/10" patterns near "risk"
+		if strings.Contains(lineLower, "risk") {
+			re := strings.NewReplacer("risk assessment score:", "", "risk score:", "", ":", "", " ", "")
+			cleaned := re.Replace(lineLower)
+			if idx := strings.Index(cleaned, "/10"); idx > 0 && idx < len(cleaned)-3 {
+				scoreStr := cleaned[:idx]
+				if score, err := strconv.Atoi(scoreStr); err == nil {
+					if score >= 0 && score <= 10 {
+						return score
+					}
+				}
+			}
+		}
+	}
+
+	// If no explicit score found, return -1 to indicate no score
+	return -1
 }
 
 // detectSeverity detects severity from a line of text
