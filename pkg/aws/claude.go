@@ -418,6 +418,74 @@ Here is the diff to review:
 	return response.Content[0].Text, nil
 }
 
+// InvokeClaude invokes Claude with a custom prompt (for general use, not just diffs)
+func InvokeClaude(ctx context.Context, cfg aws.Config, prompt string) (string, error) {
+	client := bedrockruntime.NewFromConfig(cfg)
+	
+	// Prepare the request body for Claude Opus 4.5 via Bedrock
+	requestBody := map[string]interface{}{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens":        4096,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type": "text",
+						"text": prompt,
+					},
+				},
+			},
+		},
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Invoke Claude via Bedrock
+	// Use Claude Opus 4.5, fallback to Claude 3 Sonnet if needed
+	modelID := "anthropic.claude-opus-4-5-20250514-v1:0"
+
+	output, err := client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
+		ModelId:     aws.String(modelID),
+		ContentType: aws.String("application/json"),
+		Body:        jsonBody,
+	})
+
+	if err != nil {
+		// Try Claude 3 Sonnet as fallback
+		modelID = "anthropic.claude-3-sonnet-20240229-v1:0"
+		output, err = client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
+			ModelId:     aws.String(modelID),
+			ContentType: aws.String("application/json"),
+			Body:        jsonBody,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to invoke Claude model: %w", err)
+		}
+	}
+
+	// Parse the response
+	var response struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+
+	if err := json.Unmarshal(output.Body, &response); err != nil {
+		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if len(response.Content) == 0 {
+		return "", fmt.Errorf("empty response from Claude")
+	}
+
+	return response.Content[0].Text, nil
+}
+
 // combineAnalysesSummary creates a high-level summary from multiple chunk analyses
 func combineAnalysesSummary(analyses []string) string {
 	if len(analyses) == 0 {

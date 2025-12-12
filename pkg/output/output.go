@@ -43,6 +43,17 @@ func PrintText(data interface{}) error {
 		return nil
 	}
 
+	// Check if it's Jira summary data (has "summary" key with ticket info)
+	summaryKey := val.MapIndex(reflect.ValueOf("summary"))
+	if summaryKey.IsValid() {
+		summaryVal := summaryKey.Interface()
+		if summaryMap, ok := summaryVal.(map[string]interface{}); ok {
+			if _, hasKey := summaryMap["key"]; hasKey {
+				return printJiraSummaryText(data)
+			}
+		}
+	}
+
 	// Check if it's ECR scan data (has "scans" key for multiple scans)
 	scansKey := val.MapIndex(reflect.ValueOf("scans"))
 	if scansKey.IsValid() {
@@ -153,6 +164,17 @@ func PrintTable(data interface{}, sortColumn string, sortDescending bool, filter
 	// Check if this is deprecations output
 	if val.MapIndex(reflect.ValueOf("deprecations")).IsValid() {
 		return printDeprecationsTable(data)
+	}
+
+	// Check if it's Jira summary data (has "summary" key with ticket info)
+	summaryKey := val.MapIndex(reflect.ValueOf("summary"))
+	if summaryKey.IsValid() {
+		summaryVal := summaryKey.Interface()
+		if summaryMap, ok := summaryVal.(map[string]interface{}); ok {
+			if _, hasKey := summaryMap["key"]; hasKey {
+				return printJiraSummaryTable(data)
+			}
+		}
 	}
 
 	// Check if it's Claude analysis data (has "claude_analysis" key)
@@ -1176,6 +1198,457 @@ func printDeprecationsTable(data interface{}) error {
 
 	t.Render()
 	return nil
+}
+
+// printJiraSummaryTable prints a formatted table for Jira ticket summary
+func printJiraSummaryTable(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return fmt.Errorf("expected map for Jira summary data")
+	}
+
+	summaryKey := val.MapIndex(reflect.ValueOf("summary"))
+	if !summaryKey.IsValid() {
+		return fmt.Errorf("summary key not found")
+	}
+
+	summary := summaryKey.Interface()
+	summaryVal := reflect.ValueOf(summary)
+	if summaryVal.Kind() != reflect.Map {
+		return fmt.Errorf("summary must be a map")
+	}
+
+	// Create table
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.Style().Options.DrawBorder = true
+	t.Style().Options.SeparateColumns = true
+	t.Style().Options.SeparateHeader = true
+
+	// Extract fields
+	getField := func(key string) string {
+		if keyVal := summaryVal.MapIndex(reflect.ValueOf(key)); keyVal.IsValid() {
+			return fmt.Sprintf("%v", keyVal.Interface())
+		}
+		return ""
+	}
+
+	// Build table rows
+	t.AppendRow(table.Row{"Key", getField("key")})
+	t.AppendRow(table.Row{"URL", getField("url")})
+	t.AppendRow(table.Row{"Summary", getField("summary")})
+	t.AppendRow(table.Row{"Status", getField("status")})
+	t.AppendRow(table.Row{"Type", getField("type")})
+	t.AppendRow(table.Row{"Priority", getField("priority")})
+
+	if assignee := getField("assignee"); assignee != "" {
+		t.AppendRow(table.Row{"Assignee", assignee})
+	}
+	if reporter := getField("reporter"); reporter != "" {
+		t.AppendRow(table.Row{"Reporter", reporter})
+	}
+	if resolution := getField("resolution"); resolution != "" {
+		t.AppendRow(table.Row{"Resolution", resolution})
+	}
+
+	t.AppendRow(table.Row{"Created", getField("created")})
+	t.AppendRow(table.Row{"Updated", getField("updated")})
+
+	if labels := getField("labels"); labels != "" && labels != "None" {
+		t.AppendRow(table.Row{"Labels", labels})
+	}
+
+	// Description as a separate section
+	if description := getField("description"); description != "" {
+		t.AppendSeparator()
+		// Wrap long descriptions for better readability
+		descriptionLines := wrapText(description, 80)
+		for i, line := range descriptionLines {
+			if i == 0 {
+				t.AppendRow(table.Row{"Description", line})
+			} else {
+				t.AppendRow(table.Row{"", line})
+			}
+		}
+	}
+
+	// Add linked resources if present
+	if devTicketsVal := summaryVal.MapIndex(reflect.ValueOf("linked_dev_tickets")); devTicketsVal.IsValid() {
+		devTickets := devTicketsVal.Interface()
+		if tickets, ok := devTickets.([]interface{}); ok && len(tickets) > 0 {
+			t.AppendSeparator()
+			t.AppendRow(table.Row{"Linked Dev Tickets", ""})
+			for _, ticket := range tickets {
+				if tMap, ok := ticket.(map[string]interface{}); ok {
+					key := fmt.Sprintf("%v", tMap["key"])
+					summary := fmt.Sprintf("%v", tMap["summary"])
+					t.AppendRow(table.Row{"", fmt.Sprintf("%s: %s", key, summary)})
+				}
+			}
+		}
+	}
+
+	if prsVal := summaryVal.MapIndex(reflect.ValueOf("linked_github_prs")); prsVal.IsValid() {
+		prs := prsVal.Interface()
+		if prList, ok := prs.([]interface{}); ok && len(prList) > 0 {
+			t.AppendSeparator()
+			t.AppendRow(table.Row{"Linked GitHub PRs", ""})
+			for _, pr := range prList {
+				if prMap, ok := pr.(map[string]interface{}); ok {
+					title := fmt.Sprintf("%v", prMap["title"])
+					url := fmt.Sprintf("%v", prMap["url"])
+					t.AppendRow(table.Row{"", fmt.Sprintf("%s - %s", title, url)})
+				}
+			}
+		}
+	}
+
+	if commitsVal := summaryVal.MapIndex(reflect.ValueOf("commit_messages")); commitsVal.IsValid() {
+		commits := commitsVal.Interface()
+		if commitList, ok := commits.([]interface{}); ok && len(commitList) > 0 {
+			t.AppendSeparator()
+			t.AppendRow(table.Row{"Commit Messages", ""})
+			for _, msg := range commitList {
+				msgStr := fmt.Sprintf("%v", msg)
+				// Truncate long commit messages
+				if len(msgStr) > 100 {
+					msgStr = msgStr[:100] + "..."
+				}
+				t.AppendRow(table.Row{"", msgStr})
+			}
+		}
+	}
+
+	if tagsVal := summaryVal.MapIndex(reflect.ValueOf("linked_git_tags")); tagsVal.IsValid() {
+		tags := tagsVal.Interface()
+		if tagList, ok := tags.([]interface{}); ok && len(tagList) > 0 {
+			t.AppendSeparator()
+			t.AppendRow(table.Row{"Git Tags/Releases", ""})
+			for _, tag := range tagList {
+				if tagMap, ok := tag.(map[string]interface{}); ok {
+					tagName := fmt.Sprintf("%v", tagMap["tag"])
+					url := fmt.Sprintf("%v", tagMap["url"])
+					t.AppendRow(table.Row{"", fmt.Sprintf("%s - %s", tagName, url)})
+				}
+			}
+		}
+	}
+
+	// Add Claude summaries if present
+	if businessSummary := getField("business_summary"); businessSummary != "" {
+		t.AppendSeparator()
+		t.AppendRow(table.Row{"Business Summary", ""})
+		// Split into multiple rows and wrap long lines
+		lines := strings.Split(businessSummary, "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				wrappedLines := wrapText(line, 80)
+				for _, wrappedLine := range wrappedLines {
+					t.AppendRow(table.Row{"", wrappedLine})
+				}
+			}
+		}
+	}
+	if technicalSummary := getField("technical_summary"); technicalSummary != "" {
+		t.AppendSeparator()
+		t.AppendRow(table.Row{"Technical Summary", ""})
+		// Split into multiple rows and wrap long lines
+		lines := strings.Split(technicalSummary, "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				wrappedLines := wrapText(line, 80)
+				for _, wrappedLine := range wrappedLines {
+					t.AppendRow(table.Row{"", wrappedLine})
+				}
+			}
+		}
+	}
+
+	t.Render()
+	return nil
+}
+
+// wrapText wraps text to a specified width, breaking on word boundaries
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+
+	var lines []string
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+
+	currentLine := words[0]
+	for _, word := range words[1:] {
+		if len(currentLine)+len(word)+1 <= width {
+			currentLine += " " + word
+		} else {
+			lines = append(lines, currentLine)
+			currentLine = word
+		}
+	}
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+
+	return lines
+}
+
+// printJiraSummaryText prints a human-readable text format for Jira ticket summary
+func printJiraSummaryText(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return fmt.Errorf("expected map for Jira summary data")
+	}
+
+	summaryKey := val.MapIndex(reflect.ValueOf("summary"))
+	if !summaryKey.IsValid() {
+		return fmt.Errorf("summary key not found")
+	}
+
+	summary := summaryKey.Interface()
+	summaryVal := reflect.ValueOf(summary)
+	if summaryVal.Kind() != reflect.Map {
+		return fmt.Errorf("summary must be a map")
+	}
+
+	// Extract fields
+	getField := func(key string) string {
+		if keyVal := summaryVal.MapIndex(reflect.ValueOf(key)); keyVal.IsValid() {
+			return fmt.Sprintf("%v", keyVal.Interface())
+		}
+		return ""
+	}
+
+	// Print header
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	fmt.Printf("JIRA TICKET SUMMARY\n")
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	fmt.Println()
+
+	// Basic ticket information
+	fmt.Printf("Ticket:     %s\n", getField("key"))
+	fmt.Printf("URL:        %s\n", getField("url"))
+	fmt.Printf("Summary:    %s\n", getField("summary"))
+	fmt.Printf("Status:     %s\n", getField("status"))
+	fmt.Printf("Type:       %s\n", getField("type"))
+	fmt.Printf("Priority:   %s\n", getField("priority"))
+
+	if assignee := getField("assignee"); assignee != "" {
+		fmt.Printf("Assignee:   %s", assignee)
+		if email := getField("assignee_email"); email != "" {
+			fmt.Printf(" (%s)", email)
+		}
+		fmt.Println()
+	}
+
+	if reporter := getField("reporter"); reporter != "" {
+		fmt.Printf("Reporter:   %s", reporter)
+		if email := getField("reporter_email"); email != "" {
+			fmt.Printf(" (%s)", email)
+		}
+		fmt.Println()
+	}
+
+	if resolution := getField("resolution"); resolution != "" {
+		fmt.Printf("Resolution: %s\n", resolution)
+	}
+
+	fmt.Printf("Created:    %s\n", getField("created"))
+	fmt.Printf("Updated:    %s\n", getField("updated"))
+
+	if labels := getField("labels"); labels != "" && labels != "None" {
+		fmt.Printf("Labels:     %s\n", labels)
+	}
+
+	fmt.Println()
+
+	// Description
+	if description := getField("description"); description != "" {
+		fmt.Println("-" + strings.Repeat("-", 78) + "-")
+		fmt.Println("DESCRIPTION")
+		fmt.Println("-" + strings.Repeat("-", 78) + "-")
+		fmt.Println()
+		wrappedLines := wrapText(description, 80)
+		for _, line := range wrappedLines {
+			fmt.Println(line)
+		}
+		fmt.Println()
+	}
+
+	// Linked Dev Tickets
+	if devTicketsVal := summaryVal.MapIndex(reflect.ValueOf("linked_dev_tickets")); devTicketsVal.IsValid() {
+		devTickets := devTicketsVal.Interface()
+		if tickets, ok := devTickets.([]interface{}); ok && len(tickets) > 0 {
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println("LINKED DEV TICKETS")
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println()
+			for _, ticket := range tickets {
+				if tMap, ok := ticket.(map[string]interface{}); ok {
+					key := fmt.Sprintf("%v", tMap["key"])
+					summary := fmt.Sprintf("%v", tMap["summary"])
+					status := fmt.Sprintf("%v", tMap["status"])
+					fmt.Printf("  • %s [%s]\n", key, status)
+					wrappedLines := wrapText(summary, 76)
+					for _, line := range wrappedLines {
+						fmt.Printf("    %s\n", line)
+					}
+					fmt.Println()
+				}
+			}
+		}
+	}
+
+	// Linked GitHub PRs
+	if prsVal := summaryVal.MapIndex(reflect.ValueOf("linked_github_prs")); prsVal.IsValid() {
+		prs := prsVal.Interface()
+		if prList, ok := prs.([]interface{}); ok && len(prList) > 0 {
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println("LINKED GITHUB PULL REQUESTS")
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println()
+			for _, pr := range prList {
+				if prMap, ok := pr.(map[string]interface{}); ok {
+					title := fmt.Sprintf("%v", prMap["title"])
+					url := fmt.Sprintf("%v", prMap["url"])
+					state := fmt.Sprintf("%v", prMap["state"])
+					author := fmt.Sprintf("%v", prMap["author"])
+					fmt.Printf("  • %s [%s] by %s\n", title, state, author)
+					fmt.Printf("    %s\n", url)
+					if desc := fmt.Sprintf("%v", prMap["description"]); desc != "" && desc != "<nil>" {
+						descLines := wrapText(desc, 76)
+						if len(descLines) > 0 && len(descLines[0]) > 0 {
+							fmt.Println()
+							for _, line := range descLines[:min(3, len(descLines))] {
+								fmt.Printf("    %s\n", line)
+							}
+							if len(descLines) > 3 {
+								fmt.Printf("    ... (%d more lines)\n", len(descLines)-3)
+							}
+						}
+					}
+					fmt.Println()
+				}
+			}
+		}
+	}
+
+	// Commit Messages
+	if commitsVal := summaryVal.MapIndex(reflect.ValueOf("commit_messages")); commitsVal.IsValid() {
+		commits := commitsVal.Interface()
+		if commitList, ok := commits.([]interface{}); ok && len(commitList) > 0 {
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println("COMMIT MESSAGES")
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println()
+			for i, msg := range commitList {
+				msgStr := fmt.Sprintf("%v", msg)
+				// Split multi-line commit messages
+				lines := strings.Split(msgStr, "\n")
+				firstLine := strings.TrimSpace(lines[0])
+				if firstLine != "" {
+					fmt.Printf("  %d. %s\n", i+1, firstLine)
+					if len(lines) > 1 {
+						for _, line := range lines[1:] {
+							trimmed := strings.TrimSpace(line)
+							if trimmed != "" {
+								wrappedLines := wrapText(trimmed, 76)
+								for _, wrappedLine := range wrappedLines {
+									fmt.Printf("     %s\n", wrappedLine)
+								}
+							}
+						}
+					}
+					fmt.Println()
+				}
+			}
+		}
+	}
+
+	// Git Tags/Releases
+	if tagsVal := summaryVal.MapIndex(reflect.ValueOf("linked_git_tags")); tagsVal.IsValid() {
+		tags := tagsVal.Interface()
+		if tagList, ok := tags.([]interface{}); ok && len(tagList) > 0 {
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println("GIT TAGS/RELEASES")
+			fmt.Println("-" + strings.Repeat("-", 78) + "-")
+			fmt.Println()
+			for _, tag := range tagList {
+				if tagMap, ok := tag.(map[string]interface{}); ok {
+					tagName := fmt.Sprintf("%v", tagMap["tag"])
+					url := fmt.Sprintf("%v", tagMap["url"])
+					fmt.Printf("  • %s\n", tagName)
+					fmt.Printf("    %s\n", url)
+					if msg := fmt.Sprintf("%v", tagMap["message"]); msg != "" && msg != "<nil>" {
+						msgLines := wrapText(msg, 76)
+						if len(msgLines) > 0 && len(msgLines[0]) > 0 {
+							fmt.Println()
+							for _, line := range msgLines[:min(5, len(msgLines))] {
+								fmt.Printf("    %s\n", line)
+							}
+							if len(msgLines) > 5 {
+								fmt.Printf("    ... (%d more lines)\n", len(msgLines)-5)
+							}
+						}
+					}
+					fmt.Println()
+				}
+			}
+		}
+	}
+
+	// Business Summary
+	if businessSummary := getField("business_summary"); businessSummary != "" {
+		fmt.Println("=" + strings.Repeat("=", 78) + "=")
+		fmt.Println("BUSINESS SUMMARY")
+		fmt.Println("=" + strings.Repeat("=", 78) + "=")
+		fmt.Println()
+		lines := strings.Split(businessSummary, "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				wrappedLines := wrapText(line, 80)
+				for _, wrappedLine := range wrappedLines {
+					fmt.Println(wrappedLine)
+				}
+			} else {
+				fmt.Println()
+			}
+		}
+		fmt.Println()
+	}
+
+	// Technical Summary
+	if technicalSummary := getField("technical_summary"); technicalSummary != "" {
+		fmt.Println("=" + strings.Repeat("=", 78) + "=")
+		fmt.Println("TECHNICAL SUMMARY")
+		fmt.Println("=" + strings.Repeat("=", 78) + "=")
+		fmt.Println()
+		lines := strings.Split(technicalSummary, "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				wrappedLines := wrapText(line, 80)
+				for _, wrappedLine := range wrappedLines {
+					fmt.Println(wrappedLine)
+				}
+			} else {
+				fmt.Println()
+			}
+		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // detectSeverity detects severity from a line of text
