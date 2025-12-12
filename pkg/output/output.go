@@ -150,6 +150,11 @@ func PrintTable(data interface{}, sortColumn string, sortDescending bool, filter
 		return PrintText(data)
 	}
 
+	// Check if this is deprecations output
+	if val.MapIndex(reflect.ValueOf("deprecations")).IsValid() {
+		return printDeprecationsTable(data)
+	}
+
 	// Check if it's Claude analysis data (has "claude_analysis" key)
 	claudeAnalysisKey := val.MapIndex(reflect.ValueOf("claude_analysis"))
 	if claudeAnalysisKey.IsValid() {
@@ -1055,6 +1060,122 @@ func extractRiskScore(analysisText string) int {
 
 	// If no explicit score found, return -1 to indicate no score
 	return -1
+}
+
+// printDeprecationsTable prints a table of deprecated language versions found in Dockerfiles
+func printDeprecationsTable(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return fmt.Errorf("expected map for deprecations data")
+	}
+
+	deprecationsKey := val.MapIndex(reflect.ValueOf("deprecations"))
+	if !deprecationsKey.IsValid() {
+		return fmt.Errorf("deprecations key not found")
+	}
+
+	deprecations := deprecationsKey.Interface()
+	deprecationsVal := reflect.ValueOf(deprecations)
+	if deprecationsVal.Kind() != reflect.Slice {
+		return fmt.Errorf("deprecations must be a slice")
+	}
+
+	if deprecationsVal.Len() == 0 {
+		return nil
+	}
+
+	// Group deprecations by repository
+	type deprecationRow struct {
+		repo     string
+		language string
+		version  string
+		file     string
+	}
+
+	repoGroups := make(map[string][]deprecationRow)
+
+	// Collect all deprecations and group by repository
+	for i := 0; i < deprecationsVal.Len(); i++ {
+		deprecation := deprecationsVal.Index(i).Interface()
+		deprecationVal := reflect.ValueOf(deprecation)
+		if deprecationVal.Kind() != reflect.Map {
+			continue
+		}
+
+		repo := ""
+		language := ""
+		version := ""
+		file := ""
+
+		if repoKey := deprecationVal.MapIndex(reflect.ValueOf("repository")); repoKey.IsValid() {
+			repo = fmt.Sprintf("%v", repoKey.Interface())
+		}
+		if langKey := deprecationVal.MapIndex(reflect.ValueOf("language")); langKey.IsValid() {
+			language = fmt.Sprintf("%v", langKey.Interface())
+		}
+		if versionKey := deprecationVal.MapIndex(reflect.ValueOf("version")); versionKey.IsValid() {
+			version = fmt.Sprintf("%v", versionKey.Interface())
+		}
+		// Check for "file" key first (for package.json, .nvmrc, .tool-versions)
+		if fileKey := deprecationVal.MapIndex(reflect.ValueOf("file")); fileKey.IsValid() {
+			file = fmt.Sprintf("%v", fileKey.Interface())
+		} else if imageKey := deprecationVal.MapIndex(reflect.ValueOf("image")); imageKey.IsValid() {
+			// Fallback to "image" for Dockerfile entries
+			file = fmt.Sprintf("%v", imageKey.Interface())
+		}
+
+		if repo != "" {
+			repoGroups[repo] = append(repoGroups[repo], deprecationRow{
+				repo:     repo,
+				language: language,
+				version:  version,
+				file:     file,
+			})
+		}
+	}
+
+	// Sort repositories alphabetically
+	repos := make([]string, 0, len(repoGroups))
+	for repo := range repoGroups {
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos)
+
+	// Create table
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.Style().Options.DrawBorder = true
+	t.Style().Options.SeparateColumns = true
+	t.Style().Options.SeparateHeader = true
+
+	t.AppendHeader(table.Row{"Repository", "Language", "Version", "File"})
+
+	// Add rows grouped by repository
+	for repoIdx, repo := range repos {
+		deprecations := repoGroups[repo]
+		for i, dep := range deprecations {
+			repoCell := repo
+			// Only show repository name on first row of each group
+			if i > 0 {
+				repoCell = ""
+			}
+
+			t.AppendRow(table.Row{
+				repoCell,
+				text.Colors{text.FgYellow}.Sprint(strings.ToUpper(dep.language)),
+				text.Colors{text.FgRed}.Sprint(dep.version),
+				dep.file,
+			})
+		}
+
+		// Add separator row between repository groups (but not after the last one)
+		if repoIdx < len(repos)-1 {
+			t.AppendSeparator()
+		}
+	}
+
+	t.Render()
+	return nil
 }
 
 // detectSeverity detects severity from a line of text
