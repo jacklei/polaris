@@ -161,3 +161,139 @@ func TestGetCVECriticalCount_EmptyParams(t *testing.T) {
 		t.Errorf("GetCVECriticalCount() with both empty = %v, want 0", result)
 	}
 }
+
+func TestGetLatestImageTags_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping integration test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with a non-existent repository (should return empty slice)
+	tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", 10)
+	if err != nil {
+		// Error is acceptable for non-existent repo
+		t.Logf("GetLatestImageTags() with non-existent repo returned error (expected): %v", err)
+		return
+	}
+
+	if len(tags) != 0 {
+		t.Errorf("GetLatestImageTags() with non-existent repo = %v, want empty slice", tags)
+	}
+}
+
+func TestGetLatestImageTags_EmptyRepository(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with empty repository name
+	tags, err := GetLatestImageTags(ctx, client, "", 10)
+	if err == nil {
+		t.Logf("GetLatestImageTags() with empty repo returned: %v (may be valid)", tags)
+	}
+}
+
+func TestGetLatestImageTags_ZeroMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with zero maxTags (should default to 10)
+	tags, err := GetLatestImageTags(ctx, client, "non-existent-repo-12345", 0)
+	if err != nil {
+		t.Logf("GetLatestImageTags() with zero maxTags returned error: %v", err)
+		return
+	}
+
+	// Should handle gracefully
+	_ = tags
+}
+
+func TestGetLatestImageTagsWithDates_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping integration test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with a non-existent repository (should return empty slice)
+	tagInfos, err := GetLatestImageTagsWithDates(ctx, client, "non-existent-repo-12345", 10)
+	if err != nil {
+		// Error is acceptable for non-existent repo
+		t.Logf("GetLatestImageTagsWithDates() with non-existent repo returned error (expected): %v", err)
+		return
+	}
+
+	if len(tagInfos) != 0 {
+		t.Errorf("GetLatestImageTagsWithDates() with non-existent repo = %v, want empty slice", tagInfos)
+	}
+}
+
+func TestGetLatestImageTagsWithDates_EmptyRepository(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with empty repository name
+	tagInfos, err := GetLatestImageTagsWithDates(ctx, client, "", 10)
+	if err == nil {
+		t.Logf("GetLatestImageTagsWithDates() with empty repo returned: %v (may be valid)", tagInfos)
+	}
+}
+
+func TestGetLatestImageTagsWithDates_ZeroMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with zero maxTags (should default to 10)
+	tagInfos, err := GetLatestImageTagsWithDates(ctx, client, "non-existent-repo-12345", 0)
+	if err != nil {
+		t.Logf("GetLatestImageTagsWithDates() with zero maxTags returned error: %v", err)
+		return
+	}
+
+	// Should handle gracefully
+	_ = tagInfos
+}
+
+func TestGetLatestImageTagsWithDates_NegativeMaxTags(t *testing.T) {
+	ctx := context.Background()
+
+	client, err := GetECRClient(ctx, "default")
+	if err != nil {
+		t.Skipf("Skipping test: AWS credentials not available: %v", err)
+		return
+	}
+
+	// Test with negative maxTags (should default to 10)
+	tagInfos, err := GetLatestImageTagsWithDates(ctx, client, "non-existent-repo-12345", -1)
+	if err != nil {
+		t.Logf("GetLatestImageTagsWithDates() with negative maxTags returned error: %v", err)
+		return
+	}
+
+	// Should handle gracefully
+	_ = tagInfos
+}

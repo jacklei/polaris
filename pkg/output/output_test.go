@@ -305,3 +305,137 @@ func TestPrint(t *testing.T) {
 	}
 }
 
+func TestPrintText_ECRScanMultiple(t *testing.T) {
+	// Test PrintText with multiple ECR scans
+	data := map[string]interface{}{
+		"repository": "my-repo",
+		"scans": []map[string]interface{}{
+			{
+				"repository": "my-repo",
+				"tag":        "v1.0.0",
+				"pushed_at":  "2024-01-01T00:00:00Z",
+				"cve_count":  0,
+			},
+			{
+				"repository": "my-repo",
+				"tag":        "v2.0.0",
+				"pushed_at":  "2024-01-02T00:00:00Z",
+				"cve_count":  5,
+			},
+		},
+	}
+
+	err := PrintText(data)
+	if err != nil {
+		t.Errorf("PrintText() with multiple ECR scans error = %v", err)
+	}
+}
+
+func TestPrintText_ECRScanSingle(t *testing.T) {
+	// Test PrintText with single ECR scan
+	data := map[string]interface{}{
+		"repository": "my-repo",
+		"tag":        "v1.0.0",
+		"pushed_at":  "2024-01-01T00:00:00Z",
+		"cve_count":  10,
+	}
+
+	err := PrintText(data)
+	if err != nil {
+		t.Errorf("PrintText() with single ECR scan error = %v", err)
+	}
+}
+
+func TestPrintText_ECRScanWithZeroCVEs(t *testing.T) {
+	// Test PrintText with zero CVEs
+	data := map[string]interface{}{
+		"repository": "my-repo",
+		"tag":        "v1.0.0",
+		"pushed_at":  "2024-01-01T00:00:00Z",
+		"cve_count":  0,
+	}
+
+	err := PrintText(data)
+	if err != nil {
+		t.Errorf("PrintText() with zero CVEs error = %v", err)
+	}
+}
+
+func TestPrintText_ECRScanWithInvalidCVECount(t *testing.T) {
+	// Test PrintText with invalid CVE count (non-numeric)
+	data := map[string]interface{}{
+		"repository": "my-repo",
+		"tag":        "v1.0.0",
+		"pushed_at":  "2024-01-01T00:00:00Z",
+		"cve_count":  "invalid",
+	}
+
+	err := PrintText(data)
+	if err != nil {
+		t.Errorf("PrintText() with invalid CVE count should handle gracefully, got: %v", err)
+	}
+}
+
+func TestPrintText_NonMapData(t *testing.T) {
+	// Test PrintText with non-map data
+	err := PrintText("not a map")
+	if err != nil {
+		t.Errorf("PrintText() with non-map data error = %v", err)
+	}
+}
+
+func TestPrintf(t *testing.T) {
+	err := Printf("Test %s %d", "text", 42)
+	if err != nil {
+		t.Errorf("Printf() error = %v", err)
+	}
+}
+
+func TestPrintln(t *testing.T) {
+	err := Println("text", "arg1", "arg2", 42)
+	if err != nil {
+		t.Errorf("Println() error = %v", err)
+	}
+}
+
+func TestPrintTable_ECRScanSingle(t *testing.T) {
+	// Test PrintTable with single ECR scan
+	data := map[string]interface{}{
+		"repository": "my-repo",
+		"tag":        "v1.0.0",
+		"pushed_at":  "2024-01-01T00:00:00Z",
+		"cve_count":  5,
+	}
+
+	err := PrintTable(data, "", false, "")
+	if err != nil {
+		t.Errorf("PrintTable() with single ECR scan error = %v", err)
+	}
+}
+
+func TestPrintTable_ECRScanMultiple(t *testing.T) {
+	// Test PrintTable with multiple ECR scans
+	data := map[string]interface{}{
+		"repository": "my-repo",
+		"scans": []map[string]interface{}{
+			{
+				"repository": "my-repo",
+				"tag":        "v1.0.0",
+				"pushed_at":  "2024-01-01T00:00:00Z",
+				"cve_count":  0,
+			},
+			{
+				"repository": "my-repo",
+				"tag":        "v2.0.0",
+				"pushed_at":  "2024-01-02T00:00:00Z",
+				"cve_count":  5,
+			},
+		},
+	}
+
+	err := PrintTable(data, "", false, "")
+	if err != nil {
+		t.Errorf("PrintTable() with multiple ECR scans error = %v", err)
+	}
+}
+

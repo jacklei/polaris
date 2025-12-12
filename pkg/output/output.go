@@ -13,6 +13,7 @@ import (
 	"github.com/jacklei/polaris/pkg/aws"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/rs/zerolog/log"
 )
 
 // Print formats and prints data based on the configured output type
@@ -33,10 +34,98 @@ func PrintJSON(data interface{}) error {
 	return encoder.Encode(data)
 }
 
-// PrintText prints data as plain text
+// PrintText prints data as plain text using zerolog
 func PrintText(data interface{}) error {
-	_, err := fmt.Fprintf(os.Stdout, "%v\n", data)
-	return err
+	// Check if data is a map
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		log.Info().Interface("data", data).Send()
+		return nil
+	}
+
+	// Check if it's ECR scan data (has "scans" key for multiple scans)
+	scansKey := val.MapIndex(reflect.ValueOf("scans"))
+	if scansKey.IsValid() {
+		repositoryKey := val.MapIndex(reflect.ValueOf("repository"))
+		repository := ""
+		if repositoryKey.IsValid() {
+			repository = fmt.Sprintf("%v", repositoryKey.Interface())
+		}
+
+		scansVal := scansKey.Interface()
+		scansSlice := reflect.ValueOf(scansVal)
+		if scansSlice.Kind() == reflect.Slice {
+			for i := 0; i < scansSlice.Len(); i++ {
+				scanVal := scansSlice.Index(i).Interface()
+				if scanMap, ok := scanVal.(map[string]interface{}); ok {
+					tag := fmt.Sprintf("%v", scanMap["tag"])
+					cveCountStr := fmt.Sprintf("%v", scanMap["cve_count"])
+					pushedAt := fmt.Sprintf("%v", scanMap["pushed_at"])
+
+					// Parse CVE count to determine log level
+					cveCount := 0
+					if count, err := strconv.Atoi(cveCountStr); err == nil {
+						cveCount = count
+					}
+
+					logger := log.Info()
+					if cveCount > 0 {
+						logger = log.Error()
+					}
+
+					logger.
+						Str("repository", repository).
+						Str("tag", tag).
+						Str("pushed_at", pushedAt).
+						Int("cve_critical_count", cveCount).
+						Msg("ECR scan result")
+				}
+			}
+			return nil
+		}
+	}
+
+	// Check if it's single ECR scan data (has "cve_count" key)
+	cveCountKey := val.MapIndex(reflect.ValueOf("cve_count"))
+	if cveCountKey.IsValid() {
+		repository := ""
+		tag := ""
+		pushedAt := ""
+		cveCountStr := fmt.Sprintf("%v", cveCountKey.Interface())
+
+		// Parse CVE count to determine log level
+		cveCount := 0
+		if count, err := strconv.Atoi(cveCountStr); err == nil {
+			cveCount = count
+		}
+
+		if repoKey := val.MapIndex(reflect.ValueOf("repository")); repoKey.IsValid() {
+			repository = fmt.Sprintf("%v", repoKey.Interface())
+		}
+		if tagKey := val.MapIndex(reflect.ValueOf("tag")); tagKey.IsValid() {
+			tag = fmt.Sprintf("%v", tagKey.Interface())
+		}
+		if pushedAtKey := val.MapIndex(reflect.ValueOf("pushed_at")); pushedAtKey.IsValid() {
+			pushedAt = fmt.Sprintf("%v", pushedAtKey.Interface())
+		}
+
+		logger := log.Info()
+		if cveCount > 0 {
+			logger = log.Error()
+		}
+
+		logger.
+			Str("repository", repository).
+			Str("tag", tag).
+			Str("pushed_at", pushedAt).
+			Int("cve_critical_count", cveCount).
+			Msg("ECR scan result")
+		return nil
+	}
+
+	// For other data types, use zerolog's interface logging
+	log.Info().Interface("data", data).Send()
+	return nil
 }
 
 // Printf formats and prints text (only for text output mode)
@@ -55,12 +144,24 @@ func Println(outputType string, args ...interface{}) error {
 
 // PrintTable prints data as a formatted table
 func PrintTable(data interface{}, sortColumn string, sortDescending bool, filter string) error {
-	// Check if data is a map with "services" key
+	// Check if data is a map
 	val := reflect.ValueOf(data)
 	if val.Kind() != reflect.Map {
 		return PrintText(data)
 	}
 
+	// Check if it's ECR scan data (has "scans" key for multiple scans, or "cve_count" for single scan)
+	scansKey := val.MapIndex(reflect.ValueOf("scans"))
+	if scansKey.IsValid() {
+		return printEcrScansTable(data)
+	}
+
+	cveCountKey := val.MapIndex(reflect.ValueOf("cve_count"))
+	if cveCountKey.IsValid() {
+		return printEcrScanTable(data)
+	}
+
+	// Check if it's ECS services data (has "services" key)
 	servicesKey := val.MapIndex(reflect.ValueOf("services"))
 	if !servicesKey.IsValid() {
 		return PrintText(data)
@@ -258,6 +359,247 @@ func printServicesTable(services []aws.ECSService, sortColumn string, sortDescen
 				text.Colors{deltaColor}.Sprint(deltaStr),
 			})
 		}
+	}
+
+	t.Render()
+	return nil
+}
+
+func printEcrScanTable(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return PrintText(data)
+	}
+
+	// Extract values from the map
+	repositoryKey := val.MapIndex(reflect.ValueOf("repository"))
+	tagKey := val.MapIndex(reflect.ValueOf("tag"))
+	pushedAtKey := val.MapIndex(reflect.ValueOf("pushed_at"))
+	cveCountKey := val.MapIndex(reflect.ValueOf("cve_count"))
+
+	var repository, tag, pushedAt string
+	var cveCount int
+
+	if repositoryKey.IsValid() {
+		if repoVal, ok := repositoryKey.Interface().(string); ok {
+			repository = repoVal
+		}
+	}
+	if tagKey.IsValid() {
+		if tagVal, ok := tagKey.Interface().(string); ok {
+			tag = tagVal
+		}
+	}
+	if pushedAtKey.IsValid() {
+		if pushedAtVal, ok := pushedAtKey.Interface().(string); ok {
+			pushedAt = pushedAtVal
+		}
+	}
+	if cveCountKey.IsValid() {
+		// Handle both int and float64 (JSON unmarshaling can produce float64)
+		switch v := cveCountKey.Interface().(type) {
+		case int:
+			cveCount = v
+		case int64:
+			cveCount = int(v)
+		case float64:
+			cveCount = int(v)
+		}
+	}
+
+	// Format pushed at date
+	pushedAtStr := pushedAt
+	if pushedAtStr != "" {
+		if t, err := time.Parse(time.RFC3339, pushedAtStr); err == nil {
+			pushedAtStr = t.Format("2006-01-02 15:04")
+		}
+	}
+
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Repository", "Tag", "Pushed At", "CVE Critical Count"})
+
+	// Color code based on CVE count
+	var cveColor text.Color
+	cveStr := fmt.Sprintf("%d", cveCount)
+	if cveCount == 0 {
+		cveColor = text.FgGreen
+	} else if cveCount < 5 {
+		cveColor = text.FgYellow
+	} else {
+		cveColor = text.FgRed
+	}
+
+	t.AppendRow(table.Row{
+		repository,
+		tag,
+		pushedAtStr,
+		text.Colors{cveColor}.Sprint(cveStr),
+	})
+
+	t.Render()
+	return nil
+}
+
+func printEcrScansTable(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return PrintText(data)
+	}
+
+	// Extract repository and scans
+	repositoryKey := val.MapIndex(reflect.ValueOf("repository"))
+	scansKey := val.MapIndex(reflect.ValueOf("scans"))
+
+	var repository string
+	if repositoryKey.IsValid() {
+		if repoVal, ok := repositoryKey.Interface().(string); ok {
+			repository = repoVal
+		}
+	}
+
+	if !scansKey.IsValid() {
+		return PrintText(data)
+	}
+
+	scansVal := scansKey.Interface()
+	scansSlice := reflect.ValueOf(scansVal)
+	if scansSlice.Kind() != reflect.Slice {
+		return PrintText(data)
+	}
+
+	// Extract all scan results into a slice for sorting
+	type scanResult struct {
+		tag      string
+		pushedAt string
+		cveCount int
+	}
+	scanResults := make([]scanResult, 0, scansSlice.Len())
+
+	for i := 0; i < scansSlice.Len(); i++ {
+		scanVal := scansSlice.Index(i).Interface()
+		scanReflect := reflect.ValueOf(scanVal)
+
+		var tag string
+		var pushedAt string
+		var cveCount int
+
+		// Handle both maps and structs
+		if scanReflect.Kind() == reflect.Map {
+			// It's a map
+			tagKey := scanReflect.MapIndex(reflect.ValueOf("tag"))
+			if tagKey.IsValid() {
+				if tagVal, ok := tagKey.Interface().(string); ok {
+					tag = tagVal
+				}
+			}
+
+			pushedAtKey := scanReflect.MapIndex(reflect.ValueOf("pushed_at"))
+			if pushedAtKey.IsValid() {
+				if pushedAtVal, ok := pushedAtKey.Interface().(string); ok {
+					pushedAt = pushedAtVal
+				}
+			}
+
+			cveCountKey := scanReflect.MapIndex(reflect.ValueOf("cve_count"))
+			if cveCountKey.IsValid() {
+				switch v := cveCountKey.Interface().(type) {
+				case int:
+					cveCount = v
+				case int64:
+					cveCount = int(v)
+				case float64:
+					cveCount = int(v)
+				}
+			}
+		} else if scanReflect.Kind() == reflect.Struct {
+			// It's a struct - access fields directly
+			tagField := scanReflect.FieldByName("Tag")
+			if tagField.IsValid() && tagField.Kind() == reflect.String {
+				tag = tagField.String()
+			}
+
+			pushedAtField := scanReflect.FieldByName("PushedAt")
+			if pushedAtField.IsValid() {
+				if pushedAtField.Kind() == reflect.String {
+					pushedAt = pushedAtField.String()
+				}
+			}
+
+			cveCountField := scanReflect.FieldByName("CveCount")
+			if cveCountField.IsValid() {
+				switch cveCountField.Kind() {
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					cveCount = int(cveCountField.Int())
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					cveCount = int(cveCountField.Uint())
+				case reflect.Float32, reflect.Float64:
+					cveCount = int(cveCountField.Float())
+				}
+			}
+		} else {
+			// Skip if not map or struct
+			continue
+		}
+
+		scanResults = append(scanResults, scanResult{
+			tag:      tag,
+			pushedAt: pushedAt,
+			cveCount: cveCount,
+		})
+	}
+
+	// Sort by pushed_at descending (newest first)
+	sort.Slice(scanResults, func(i, j int) bool {
+		if scanResults[i].pushedAt == "" && scanResults[j].pushedAt == "" {
+			return false
+		}
+		if scanResults[i].pushedAt == "" {
+			return false // Empty dates go to the end
+		}
+		if scanResults[j].pushedAt == "" {
+			return true
+		}
+		// Parse and compare dates
+		ti, err1 := time.Parse(time.RFC3339, scanResults[i].pushedAt)
+		tj, err2 := time.Parse(time.RFC3339, scanResults[j].pushedAt)
+		if err1 != nil || err2 != nil {
+			return scanResults[i].pushedAt > scanResults[j].pushedAt // String comparison fallback
+		}
+		return ti.After(tj) // Descending order (newest first)
+	})
+
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Repository", "Tag", "Pushed At", "CVE Critical Count"})
+
+	// Render sorted results
+	for _, result := range scanResults {
+		// Format pushed at date
+		pushedAtStr := result.pushedAt
+		if pushedAtStr != "" {
+			if t, err := time.Parse(time.RFC3339, pushedAtStr); err == nil {
+				pushedAtStr = t.Format("2006-01-02 15:04")
+			}
+		}
+
+		// Color code based on CVE count
+		var cveColor text.Color
+		cveStr := fmt.Sprintf("%d", result.cveCount)
+		if result.cveCount == 0 {
+			cveColor = text.FgGreen
+		} else if result.cveCount < 5 {
+			cveColor = text.FgYellow
+		} else {
+			cveColor = text.FgRed
+		}
+
+		t.AppendRow(table.Row{
+			repository,
+			result.tag,
+			pushedAtStr,
+			text.Colors{cveColor}.Sprint(cveStr),
+		})
 	}
 
 	t.Render()
