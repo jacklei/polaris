@@ -1,11 +1,11 @@
-name: Tests
+name: unit-tests
 
 on:
   push:
   pull_request:
 
 jobs:
-  test:
+  go-test:
     runs-on: ubuntu-latest
     
     steps:
