@@ -74,3 +74,23 @@ func ValidateProfile(ctx context.Context, profile string) error {
 
 	return nil
 }
+
+// GetAccountID retrieves the AWS account ID for the specified profile
+func GetAccountID(ctx context.Context, profile string) (string, error) {
+	cfg, err := LoadAWSConfig(ctx, profile)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config for profile %s: %w", profile, err)
+	}
+
+	stsClient := sts.NewFromConfig(cfg)
+	result, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get caller identity for profile %s: %w", profile, err)
+	}
+
+	if result.Account == nil {
+		return "", fmt.Errorf("account ID is nil for profile %s", profile)
+	}
+
+	return aws.ToString(result.Account), nil
+}
