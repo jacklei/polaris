@@ -134,6 +134,12 @@ func PrintText(data interface{}) error {
 		return nil
 	}
 
+	// Check if it's CAB tickets grouped by team (has "tickets_by_team" key)
+	ticketsByTeamKey := val.MapIndex(reflect.ValueOf("tickets_by_team"))
+	if ticketsByTeamKey.IsValid() {
+		return printCABTicketsText(data)
+	}
+
 	// For other data types, use zerolog's interface logging
 	log.Info().Interface("data", data).Send()
 	return nil
@@ -181,6 +187,12 @@ func PrintTable(data interface{}, sortColumn string, sortDescending bool, filter
 	claudeAnalysisKey := val.MapIndex(reflect.ValueOf("claude_analysis"))
 	if claudeAnalysisKey.IsValid() {
 		return printClaudeAnalysisTable(data)
+	}
+
+	// Check if it's CAB tickets grouped by team (has "tickets_by_team" key)
+	ticketsByTeamKey := val.MapIndex(reflect.ValueOf("tickets_by_team"))
+	if ticketsByTeamKey.IsValid() {
+		return printCABTicketsTable(data)
 	}
 
 	// Check if it's ECR scan data (has "scans" key for multiple scans, or "cve_count" for single scan)
@@ -734,6 +746,23 @@ func printClaudeAnalysisTable(data interface{}) error {
 			fmt.Println(strings.Repeat("─", 80))
 			return nil
 		}
+		
+		// Show success message when no issues found or analysis is empty
+		if len(trimmedAnalysis) == 0 || isNoIssues {
+			fmt.Println("\n✅ SRE Technical Review Complete")
+			fmt.Println(strings.Repeat("─", 80))
+			if url != "" {
+				fmt.Printf("URL: %s\n", url)
+			}
+			if owner != "" && repo != "" {
+				fmt.Printf("Repository: %s/%s\n", owner, repo)
+			}
+			fmt.Println("\n✅ No security, database, or infrastructure concerns found.")
+			fmt.Println("The diff appears safe to proceed.")
+			fmt.Println(strings.Repeat("─", 80))
+			return nil
+		}
+		
 		log.Debug().Msg("No findings extracted from Claude analysis, returning nil")
 		return nil
 	}
@@ -1637,6 +1666,219 @@ func printJiraSummaryText(data interface{}) error {
 				fmt.Println()
 			}
 		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// printCABTicketsText prints CAB tickets grouped by team in text format
+func printCABTicketsText(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return fmt.Errorf("expected map for CAB tickets data")
+	}
+
+	ticketsByTeamKey := val.MapIndex(reflect.ValueOf("tickets_by_team"))
+	if !ticketsByTeamKey.IsValid() {
+		return fmt.Errorf("tickets_by_team key not found")
+	}
+
+	ticketsByTeam := ticketsByTeamKey.Interface()
+	ticketsMap := reflect.ValueOf(ticketsByTeam)
+	if ticketsMap.Kind() != reflect.Map {
+		return fmt.Errorf("tickets_by_team must be a map")
+	}
+
+	// Get all team names and sort them
+	var teamNames []string
+	for _, key := range ticketsMap.MapKeys() {
+		teamNames = append(teamNames, key.String())
+	}
+	sort.Strings(teamNames)
+
+	if len(teamNames) == 0 {
+		fmt.Println("No open CAB tickets found.")
+		return nil
+	}
+
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	fmt.Println("OVERDUE CAB TICKETS BY TEAM")
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	fmt.Println()
+
+	for _, teamName := range teamNames {
+		teamTicketsVal := ticketsMap.MapIndex(reflect.ValueOf(teamName))
+		if !teamTicketsVal.IsValid() {
+			continue
+		}
+
+		teamTickets := teamTicketsVal.Interface()
+		ticketsSlice := reflect.ValueOf(teamTickets)
+		if ticketsSlice.Kind() != reflect.Slice {
+			continue
+		}
+
+		fmt.Println("-" + strings.Repeat("-", 78) + "-")
+		fmt.Printf("TEAM: %s (%d ticket(s))\n", teamName, ticketsSlice.Len())
+		fmt.Println("-" + strings.Repeat("-", 78) + "-")
+		fmt.Println()
+
+		for i := 0; i < ticketsSlice.Len(); i++ {
+			ticketVal := ticketsSlice.Index(i).Interface()
+			ticketReflect := reflect.ValueOf(ticketVal)
+			
+			// Skip if not a struct or map
+			if ticketReflect.Kind() != reflect.Struct && ticketReflect.Kind() != reflect.Map {
+				continue
+			}
+			
+			getField := func(fieldName string) string {
+				if ticketReflect.Kind() == reflect.Struct {
+					// Handle struct - use struct field name
+					field := ticketReflect.FieldByName(fieldName)
+					if field.IsValid() && field.CanInterface() {
+						val := field.Interface()
+						if val != nil {
+							return fmt.Sprintf("%v", val)
+						}
+					}
+				} else if ticketReflect.Kind() == reflect.Map {
+					// Handle map - use key name
+					keyVal := ticketReflect.MapIndex(reflect.ValueOf(fieldName))
+					if keyVal.IsValid() {
+						return fmt.Sprintf("%v", keyVal.Interface())
+					}
+					// Try lowercase version
+					if len(fieldName) > 0 {
+						keyLower := strings.ToLower(fieldName[:1]) + fieldName[1:]
+						keyVal = ticketReflect.MapIndex(reflect.ValueOf(keyLower))
+						if keyVal.IsValid() {
+							return fmt.Sprintf("%v", keyVal.Interface())
+						}
+					}
+				}
+				return ""
+			}
+
+			// Use struct field names (capitalized)
+			ticketKey := getField("Key")
+			ticketURL := getField("URL")
+			summary := getField("Summary")
+			assignee := getField("Assignee")
+			assigneeEmail := getField("AssigneeEmail")
+			status := getField("Status")
+			plannedStart := getField("PlannedStart")
+
+			fmt.Printf("  Ticket:     %s\n", ticketKey)
+			fmt.Printf("  URL:        %s\n", ticketURL)
+			fmt.Printf("  Summary:    %s\n", summary)
+			fmt.Printf("  Assignee:   %s", assignee)
+			if assigneeEmail != "" {
+				fmt.Printf(" (%s)", assigneeEmail)
+			}
+			fmt.Println()
+			fmt.Printf("  Status:     %s\n", status)
+			if plannedStart != "" {
+				fmt.Printf("  Planned Start: %s\n", plannedStart)
+			} else {
+				fmt.Printf("  Planned Start: Not set\n")
+			}
+			fmt.Println()
+		}
+	}
+
+	return nil
+}
+
+// printCABTicketsTable prints CAB tickets grouped by team in table format
+func printCABTicketsTable(data interface{}) error {
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Map {
+		return fmt.Errorf("expected map for CAB tickets data")
+	}
+
+	ticketsByTeamKey := val.MapIndex(reflect.ValueOf("tickets_by_team"))
+	if !ticketsByTeamKey.IsValid() {
+		return fmt.Errorf("tickets_by_team key not found")
+	}
+
+	ticketsByTeam := ticketsByTeamKey.Interface()
+	ticketsMap := reflect.ValueOf(ticketsByTeam)
+	if ticketsMap.Kind() != reflect.Map {
+		return fmt.Errorf("tickets_by_team must be a map")
+	}
+
+	// Get all team names and sort them
+	var teamNames []string
+	for _, key := range ticketsMap.MapKeys() {
+		teamNames = append(teamNames, key.String())
+	}
+	sort.Strings(teamNames)
+
+	if len(teamNames) == 0 {
+		fmt.Println("No open CAB tickets found.")
+		return nil
+	}
+
+	for _, teamName := range teamNames {
+		teamTicketsVal := ticketsMap.MapIndex(reflect.ValueOf(teamName))
+		if !teamTicketsVal.IsValid() {
+			continue
+		}
+
+		teamTickets := teamTicketsVal.Interface()
+		ticketsSlice := reflect.ValueOf(teamTickets)
+		if ticketsSlice.Kind() != reflect.Slice {
+			continue
+		}
+
+		// Create table for this team
+		t := table.NewWriter()
+		t.SetOutputMirror(os.Stdout)
+		t.SetTitle(fmt.Sprintf("Team: %s (%d ticket(s))", teamName, ticketsSlice.Len()))
+		t.AppendHeader(table.Row{"Ticket", "Summary", "Assignee", "Status", "Planned Start"})
+
+		for i := 0; i < ticketsSlice.Len(); i++ {
+			ticketVal := ticketsSlice.Index(i).Interface()
+			ticketMap := reflect.ValueOf(ticketVal)
+			if ticketMap.Kind() != reflect.Map {
+				continue
+			}
+
+			getField := func(key string) string {
+				if keyVal := ticketMap.MapIndex(reflect.ValueOf(key)); keyVal.IsValid() {
+					return fmt.Sprintf("%v", keyVal.Interface())
+				}
+				return ""
+			}
+
+			ticketKey := getField("key")
+			url := getField("url")
+			summary := getField("summary")
+			assignee := getField("assignee")
+			if assignee == "" {
+				assignee = "Unassigned"
+			}
+			status := getField("status")
+			plannedStart := getField("planned_start")
+			if plannedStart == "" {
+				plannedStart = "Not set"
+			}
+
+			// Truncate summary if too long
+			if len(summary) > 50 {
+				summary = summary[:47] + "..."
+			}
+
+			// Create ticket link text
+			ticketLink := fmt.Sprintf("%s\n%s", ticketKey, url)
+
+			t.AppendRow(table.Row{ticketLink, summary, assignee, status, plannedStart})
+		}
+
+		t.SetStyle(table.StyleColoredBright)
+		t.Render()
 		fmt.Println()
 	}
 

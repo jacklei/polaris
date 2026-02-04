@@ -67,7 +67,7 @@ func TestPrintTable_FilterCount(t *testing.T) {
 
 func TestPrintTable_FilterDelta(t *testing.T) {
 	services := []aws.ECSService{
-		{Name: "service1", DesiredCount: 10, RunningCount: 5},   // delta: -5
+		{Name: "service1", DesiredCount: 10, RunningCount: 5},  // delta: -5
 		{Name: "service2", DesiredCount: 10, RunningCount: 10}, // delta: 0
 		{Name: "service3", DesiredCount: 10, RunningCount: 15}, // delta: +5
 	}
@@ -186,7 +186,7 @@ func TestPrintTable_SortByCount(t *testing.T) {
 
 func TestPrintTable_SortByDelta(t *testing.T) {
 	services := []aws.ECSService{
-		{Name: "service1", DesiredCount: 10, RunningCount: 5},   // delta: -5
+		{Name: "service1", DesiredCount: 10, RunningCount: 5},  // delta: -5
 		{Name: "service2", DesiredCount: 10, RunningCount: 15}, // delta: +5
 		{Name: "service3", DesiredCount: 10, RunningCount: 10}, // delta: 0
 	}

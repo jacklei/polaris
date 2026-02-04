@@ -74,13 +74,7 @@ The diff link can be:
 
 		// Prepare output
 		if useClaude {
-			// Check if analysis indicates no issues - if so, don't print anything
-			if claudeAnalysis == "" {
-				// Empty analysis means no concerns found
-				return
-			}
-
-			// Always show output for Claude analysis (output layer will filter if no concerns)
+			// Always show output for Claude analysis (output layer will handle empty analysis)
 			result := map[string]interface{}{
 				"url":             diffURL,
 				"owner":           owner,

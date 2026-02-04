@@ -320,6 +320,17 @@ Review the following areas:
 - Missing indexes on frequently queried columns
 - Database schema issues that could cause performance problems
 
+**DynamoDB:**
+- NEVER allow DynamoDB Scan operations - this is a critical performance and cost issue that is NEVER acceptable
+  * DynamoDB Scan operations scan the entire table, which is extremely expensive and slow
+  * Scan operations are NEVER allowed - not in production, not in staging, not in development, not in tests, not anywhere
+  * Use Query operations with proper partition keys and sort keys instead
+  * If you see "dynamodb:Scan" permission in IAM policies, this must be flagged as a CRITICAL blocking issue
+  * If you see any code calling DynamoDB scan methods (e.g., ".scan()", "ScanRequest", "scan()", etc.), this must be flagged as a CRITICAL blocking issue
+  * Scan operations can cause massive cost overruns and performance degradation, especially on large tables
+  * Always use Query with specific partition keys, or use Global Secondary Indexes (GSI) for different access patterns
+  * There is no valid use case for Scan - if you need to access data, design your table with proper keys and use Query
+
 **Dockerfile:**
 - Layer optimization: Consolidate related operations into single RUN commands to minimize layers
   * Example: Install dependencies AND remove sensitive files (like .npmrc) in the SAME layer, not separate RUN commands

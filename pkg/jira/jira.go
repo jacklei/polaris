@@ -50,9 +50,25 @@ type Ticket struct {
 		Priority struct {
 			Name string `json:"name"`
 		} `json:"priority"`
-		Labels []string `json:"labels"`
+		Labels []string               `json:"labels"`
+		Custom map[string]interface{} `json:"-"` // For custom fields
 	} `json:"fields"`
 }
+
+// CABTicketInfo contains information about a CAB ticket for the overdue-cabs command
+type CABTicketInfo struct {
+	Key           string `json:"key"`
+	URL           string `json:"url"`
+	Summary       string `json:"summary"`
+	Assignee      string `json:"assignee"`
+	AssigneeEmail string `json:"assignee_email,omitempty"`
+	Status        string `json:"status"`
+	PlannedStart  string `json:"planned_start,omitempty"`
+	TeamName      string `json:"team_name,omitempty"`
+}
+
+// CABTicketsByTeam groups CAB tickets by team name
+type CABTicketsByTeam map[string][]CABTicketInfo
 
 // ParseTicketKey extracts the ticket key from various input formats
 func ParseTicketKey(ticketArg string) (string, error) {
@@ -774,4 +790,510 @@ func GenerateSummary(ctx context.Context, username, token, ticketArg, githubToke
 	}
 
 	return summary, nil
+}
+
+// SearchCABTickets searches for open CAB tickets using Jira search API
+func SearchCABTickets(ctx context.Context, username, token string) ([]Ticket, error) {
+	// JQL query to find CAB tickets that are still open
+	// CAB is the project key for "Change Advisory Board"
+	jql := `project = CAB AND status != Cancel AND status != Success AND status != Rollback`
+
+	// URL encode the JQL query
+	encodedJQL := url.QueryEscape(jql)
+
+	// Build API URL - using the new search/jql API endpoint
+	apiURL := fmt.Sprintf("%s/rest/api/3/search/jql?jql=%s&maxResults=1000&fields=summary,status,issuetype,assignee,labels,customfield_*,duedate,startdate", JiraDomain, encodedJQL)
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set authentication
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	// Make request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Jira API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	var searchResult struct {
+		Issues []Ticket `json:"issues"`
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if err := json.Unmarshal(body, &searchResult); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return searchResult.Issues, nil
+}
+
+// extractCustomField extracts a custom field value from a ticket's raw JSON
+func extractCustomField(ticketJSON map[string]interface{}, fieldName string) string {
+	fields, ok := ticketJSON["fields"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	// Try exact field name first
+	if val, ok := fields[fieldName]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+		if val != nil {
+			return fmt.Sprintf("%v", val)
+		}
+	}
+
+	// Try common variations
+	variations := []string{
+		fieldName,
+		strings.ToLower(fieldName),
+		strings.ReplaceAll(fieldName, " ", ""),
+		strings.ReplaceAll(strings.ToLower(fieldName), " ", ""),
+	}
+
+	for _, variation := range variations {
+		if val, ok := fields[variation]; ok {
+			if str, ok := val.(string); ok {
+				return str
+			}
+			if val != nil {
+				return fmt.Sprintf("%v", val)
+			}
+		}
+	}
+
+	return ""
+}
+
+// extractTeamName extracts team name from ticket (from custom field or labels)
+func extractTeamName(ticket *Ticket, ticketJSON map[string]interface{}) string {
+	// Try common custom field names for team
+	teamFields := []string{
+		"customfield_10000", // Common team field ID pattern
+		"Team",
+		"Team Name",
+		"team",
+		"team_name",
+	}
+
+	for _, fieldName := range teamFields {
+		if team := extractCustomField(ticketJSON, fieldName); team != "" {
+			return team
+		}
+	}
+
+	// Try to find team in labels (common pattern: "team-*" or "Team:*")
+	for _, label := range ticket.Fields.Labels {
+		if strings.HasPrefix(strings.ToLower(label), "team-") {
+			return strings.TrimPrefix(label, "team-")
+		}
+		if strings.HasPrefix(label, "Team:") {
+			return strings.TrimPrefix(label, "Team:")
+		}
+	}
+
+	return "Unassigned"
+}
+
+// extractPlannedStartDate extracts planned start date from ticket
+func extractPlannedStartDate(ticket *Ticket, ticketJSON map[string]interface{}) string {
+	// Try common custom field names for planned start date
+	dateFields := []string{
+		"customfield_10001", // Common planned start field ID pattern
+		"Planned Start Date",
+		"planned_start_date",
+		"Start Date",
+		"startdate",
+		"Planned Start",
+		"planned_start",
+	}
+
+	for _, fieldName := range dateFields {
+		if dateStr := extractCustomField(ticketJSON, fieldName); dateStr != "" {
+			// Try to parse and format the date
+			dateFormats := []string{
+				time.RFC3339,
+				time.RFC3339Nano,
+				"2006-01-02T15:04:05.000Z0700",
+				"2006-01-02T15:04:05Z0700",
+				"2006-01-02",
+			}
+			for _, format := range dateFormats {
+				if t, err := time.Parse(format, dateStr); err == nil {
+					return t.Format("2006-01-02")
+				}
+			}
+			return dateStr
+		}
+	}
+
+	return ""
+}
+
+// GetOverdueCABTickets fetches open CAB tickets and groups them by team
+func GetOverdueCABTickets(ctx context.Context, username, token string) (CABTicketsByTeam, error) {
+	// Try multiple JQL queries - first with status category, then with specific status names
+	jqlQueries := []string{
+		`project = CAB AND statusCategory != Done`,                                        // Try status category first (more reliable)
+		`project = CAB AND status != Cancel AND status != Success AND status != Rollback`, // User's specific filter
+		`project = CAB`, // Fallback: get all tickets to debug
+	}
+
+	var searchResult struct {
+		Issues []map[string]interface{} `json:"issues"`
+		Total  int                      `json:"total"`
+	}
+	var lastErr error
+
+	for i, jql := range jqlQueries {
+		log.Debug().Int("attempt", i+1).Str("jql", jql).Msg("Trying JQL query")
+
+		// URL encode the JQL query
+		encodedJQL := url.QueryEscape(jql)
+
+		// Build API URL - using the new search/jql API endpoint
+		// The new API doesn't return fields by default, so we must explicitly request them
+		// Using *all to get all fields
+		apiURL := fmt.Sprintf("%s/rest/api/3/search/jql?jql=%s&maxResults=1000&fields=*all", JiraDomain, encodedJQL)
+		log.Debug().Int("attempt", i+1).Str("api_url", apiURL).Msg("API URL")
+
+		// Create HTTP request
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create request: %w", err)
+			continue
+		}
+
+		// Set authentication
+		auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
+		req.Header.Set("Authorization", "Basic "+auth)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+
+		// Make request
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to make request: %w", err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			lastErr = fmt.Errorf("Jira API returned status %d: %s", resp.StatusCode, string(body))
+			log.Warn().Err(lastErr).Int("attempt", i+1).Msg("Query failed, trying next")
+			continue
+		}
+
+		// Parse response
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			continue
+		}
+
+		previewLen := 500
+		if len(body) < previewLen {
+			previewLen = len(body)
+		}
+		log.Debug().Int("attempt", i+1).Str("response_preview", string(body[:previewLen])).Msg("Raw API response preview")
+
+		if err := json.Unmarshal(body, &searchResult); err != nil {
+			log.Warn().Err(err).Int("attempt", i+1).Str("response_body", string(body)).Msg("Failed to parse response, trying next query")
+			lastErr = fmt.Errorf("failed to unmarshal response: %w", err)
+			continue
+		}
+
+		log.Debug().Int("attempt", i+1).Int("total", searchResult.Total).Int("issues_count", len(searchResult.Issues)).Msg("Query succeeded")
+
+		// If we got results (or if this is the fallback query), break
+		if len(searchResult.Issues) > 0 || i == len(jqlQueries)-1 {
+			break
+		}
+	}
+
+	if lastErr != nil && len(searchResult.Issues) == 0 {
+		return nil, lastErr
+	}
+
+	log.Debug().Int("ticket_count", len(searchResult.Issues)).Msg("Found CAB tickets")
+
+	// Debug: log first few tickets to see what we're getting
+	if len(searchResult.Issues) > 0 {
+		for i, issue := range searchResult.Issues {
+			if i >= 3 { // Only log first 3 for debugging
+				break
+			}
+			if key, ok := issue["key"].(string); ok {
+				if fields, ok := issue["fields"].(map[string]interface{}); ok {
+					status := "unknown"
+					if statusObj, ok := fields["status"].(map[string]interface{}); ok {
+						if s, ok := statusObj["name"].(string); ok {
+							status = s
+						}
+					}
+					log.Debug().Str("ticket", key).Str("status", status).Msg("Sample CAB ticket")
+				}
+			}
+		}
+	} else {
+		log.Warn().Int("total_in_project", searchResult.Total).Msg("No CAB tickets found matching filter, but total tickets in project")
+	}
+
+	result := make(CABTicketsByTeam)
+
+	log.Debug().Int("total_issues_to_process", len(searchResult.Issues)).Msg("Processing tickets")
+
+	processedCount := 0
+	skippedCount := 0
+
+	for i, issueJSON := range searchResult.Issues {
+		// Extract key
+		key, ok := issueJSON["key"].(string)
+		if !ok {
+			log.Debug().Int("issue_index", i).Msg("Skipping issue: no key found")
+			skippedCount++
+			continue
+		}
+
+		// Extract fields
+		fields, ok := issueJSON["fields"].(map[string]interface{})
+		if !ok {
+			log.Debug().Str("ticket_key", key).Msg("Skipping issue: no fields found")
+			// Debug: log what keys are actually in the issue
+			if i < 3 {
+				var keys []string
+				for k := range issueJSON {
+					keys = append(keys, k)
+				}
+				log.Debug().Strs("available_keys", keys).Str("ticket_key", key).Msg("Issue structure")
+				// Also log the raw issue JSON for first ticket
+				if i == 0 {
+					issueJSONBytes, _ := json.Marshal(issueJSON)
+					previewLen := 1000
+					if len(issueJSONBytes) < previewLen {
+						previewLen = len(issueJSONBytes)
+					}
+					log.Debug().Str("raw_issue_json", string(issueJSONBytes[:previewLen])).Msg("First issue raw JSON")
+				}
+			}
+			skippedCount++
+			continue
+		}
+
+		processedCount++
+
+		// Extract basic fields
+		summary := ""
+		if s, ok := fields["summary"].(string); ok {
+			summary = s
+		}
+
+		status := ""
+		if statusObj, ok := fields["status"].(map[string]interface{}); ok {
+			if s, ok := statusObj["name"].(string); ok {
+				status = s
+			}
+		}
+
+		assignee := "Unassigned"
+		assigneeEmail := ""
+		if assigneeObj, ok := fields["assignee"].(map[string]interface{}); ok && assigneeObj != nil {
+			if name, ok := assigneeObj["displayName"].(string); ok {
+				assignee = name
+			}
+			if email, ok := assigneeObj["emailAddress"].(string); ok {
+				assigneeEmail = email
+			}
+		}
+
+		// Extract team name
+		teamName := extractTeamNameFromFields(fields)
+
+		// Extract planned start date
+		plannedStart := extractPlannedStartDateFromFields(fields)
+
+		// Build CAB ticket info
+		cabTicket := CABTicketInfo{
+			Key:           key,
+			URL:           fmt.Sprintf("%s/browse/%s", JiraDomain, key),
+			Summary:       summary,
+			Status:        status,
+			PlannedStart:  plannedStart,
+			TeamName:      teamName,
+			Assignee:      assignee,
+			AssigneeEmail: assigneeEmail,
+		}
+
+		// Group by team
+		if result[teamName] == nil {
+			result[teamName] = []CABTicketInfo{}
+		}
+		result[teamName] = append(result[teamName], cabTicket)
+	}
+
+	log.Debug().Int("processed", processedCount).Int("skipped", skippedCount).Int("teams", len(result)).Msg("Finished processing tickets")
+
+	return result, nil
+}
+
+// extractTeamNameFromFields extracts team name from fields map
+func extractTeamNameFromFields(fields map[string]interface{}) string {
+	// First, try the specific team field: customfield_13154
+	if teamField, ok := fields["customfield_13154"]; ok && teamField != nil {
+		// Handle different possible structures
+		if str, ok := teamField.(string); ok && str != "" {
+			return str
+		}
+		// Object with name/value/displayName
+		if obj, ok := teamField.(map[string]interface{}); ok {
+			if name, ok := obj["name"].(string); ok && name != "" {
+				return name
+			}
+			if value, ok := obj["value"].(string); ok && value != "" {
+				return value
+			}
+			if displayName, ok := obj["displayName"].(string); ok && displayName != "" {
+				return displayName
+			}
+		}
+		// Array of objects (multi-select)
+		if arr, ok := teamField.([]interface{}); ok && len(arr) > 0 {
+			if firstItem, ok := arr[0].(map[string]interface{}); ok {
+				if name, ok := firstItem["name"].(string); ok && name != "" {
+					return name
+				}
+				if value, ok := firstItem["value"].(string); ok && value != "" {
+					return value
+				}
+				if displayName, ok := firstItem["displayName"].(string); ok && displayName != "" {
+					return displayName
+				}
+			}
+		}
+	}
+
+	// Fallback: Try to find team in labels (common pattern: "team-*" or "Team:*")
+	if labelsVal, ok := fields["labels"].([]interface{}); ok {
+		for _, labelVal := range labelsVal {
+			if label, ok := labelVal.(string); ok {
+				labelLower := strings.ToLower(label)
+				if strings.HasPrefix(labelLower, "team-") {
+					return strings.TrimPrefix(label, "team-")
+				}
+				if strings.HasPrefix(label, "Team:") {
+					return strings.TrimPrefix(label, "Team:")
+				}
+			}
+		}
+	}
+
+	// Fallback: Try common custom field names/patterns for team
+	teamFieldNames := []string{
+		"team",
+		"team_name",
+		"teamName",
+		"team name",
+		"Team",
+		"Team Name",
+		"assignee_team",
+		"owner_team",
+	}
+
+	for _, fieldName := range teamFieldNames {
+		if val, ok := fields[fieldName]; ok && val != nil {
+			if str, ok := val.(string); ok && str != "" {
+				return str
+			}
+			if obj, ok := val.(map[string]interface{}); ok {
+				if name, ok := obj["name"].(string); ok && name != "" {
+					return name
+				}
+				if value, ok := obj["value"].(string); ok && value != "" {
+					return value
+				}
+				if displayName, ok := obj["displayName"].(string); ok && displayName != "" {
+					return displayName
+				}
+			}
+		}
+	}
+
+	return "Unassigned"
+}
+
+// extractPlannedStartDateFromFields extracts planned start date from fields map
+func extractPlannedStartDateFromFields(fields map[string]interface{}) string {
+	// Try common date field names
+	dateFieldNames := []string{
+		"startdate",
+		"duedate",
+		"customfield_10020", // Common planned start field ID
+		"customfield_10021",
+	}
+
+	for _, fieldName := range dateFieldNames {
+		if val, ok := fields[fieldName]; ok && val != nil {
+			if dateStr, ok := val.(string); ok && dateStr != "" {
+				// Try to parse and format the date
+				dateFormats := []string{
+					time.RFC3339,
+					time.RFC3339Nano,
+					"2006-01-02T15:04:05.000Z0700",
+					"2006-01-02T15:04:05Z0700",
+					"2006-01-02",
+				}
+				for _, format := range dateFormats {
+					if t, err := time.Parse(format, dateStr); err == nil {
+						return t.Format("2006-01-02")
+					}
+				}
+				return dateStr
+			}
+		}
+	}
+
+	// Try to find any field with "planned" or "start" in the name
+	for key, val := range fields {
+		keyLower := strings.ToLower(key)
+		if (strings.Contains(keyLower, "planned") || strings.Contains(keyLower, "start")) && val != nil {
+			if dateStr, ok := val.(string); ok && dateStr != "" {
+				dateFormats := []string{
+					time.RFC3339,
+					time.RFC3339Nano,
+					"2006-01-02T15:04:05.000Z0700",
+					"2006-01-02T15:04:05Z0700",
+					"2006-01-02",
+				}
+				for _, format := range dateFormats {
+					if t, err := time.Parse(format, dateStr); err == nil {
+						return t.Format("2006-01-02")
+					}
+				}
+				return dateStr
+			}
+		}
+	}
+
+	return ""
 }
